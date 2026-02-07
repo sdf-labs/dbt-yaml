@@ -1,0 +1,26 @@
+[package]
+authors = ["Bo Lin <bo.lin@dbtlabs.com>", "Graham Esau <gesau@hotmail.co.uk>"]
+description = "Fork of schemars_derive adapted for dbt-serde-yaml"
+documentation = "https://docs.rs/dbt-serde-yaml/"
+edition = "2021"
+keywords = ["yaml", "serde", "json-schema", "derive"]
+license = "MIT"
+name = "dbt-yaml_schemars_derive"
+repository = "https://github.com/sdf-labs/dbt-serde-yaml"
+rust-version = "1.84"
+version = "0.1.0"
+
+[lib]
+proc-macro = true
+
+[features]
+flatten_dunder = []
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+serde_derive_internals = "0.29"
+syn = { version = "2.0", features = ["extra-traits"] }
+
+[dev-dependencies]
+pretty_assertions = "1.2.1"
