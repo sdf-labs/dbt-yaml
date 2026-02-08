@@ -1,15 +1,16 @@
 [package]
 name = "dbt-yaml"
-version = "0.1.0"
+version = "0.9.0"
 authors = ["Bo Lin <bo.lin@dbtlabs.com>", "David Tolnay <dtolnay@gmail.com>"]
 categories = ["encoding", "parser-implementations"]
 description = "YAML data format for Serde"
-documentation = "https://docs.rs/dbt-serde-yaml/"
+documentation = "https://docs.rs/dbt-yaml/"
 edition = "2021"
 keywords = ["yaml", "serde", "serialization"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/sdf-labs/dbt-serde-yaml"
-rust-version = "1.84"
+repository = "https://github.com/sdf-labs/dbt-yaml"
+rust-version = "1.88"
+exclude = ["examples/", "tests/"]
 
 [dependencies]
 indexmap = "2.7.1"
