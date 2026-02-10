@@ -16,7 +16,7 @@ This is dbt Lab's fork of the original serde-yaml crate
 ```toml
 [dependencies]
 serde = "1.0"
-dbt-yaml = "1.0.1"
+dbt-yaml = "0.9.1"
 ```
 
 Release notes are available under [GitHub releases].
