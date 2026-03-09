@@ -19,7 +19,15 @@ use syn::spanned::Spanned;
 #[proc_macro_derive(JsonSchema, attributes(schemars, serde, validate))]
 pub fn derive_json_schema_wrapper(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);
-    derive_json_schema(input, false)
+    derive_json_schema(input, false, false)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+#[proc_macro_derive(DbtSchema, attributes(schemars, serde, validate))]
+pub fn derive_dbt_schema_wrapper(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as syn::DeriveInput);
+    derive_json_schema(input, false, true)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
@@ -27,12 +35,16 @@ pub fn derive_json_schema_wrapper(input: proc_macro::TokenStream) -> proc_macro:
 #[proc_macro_derive(JsonSchema_repr, attributes(schemars, serde))]
 pub fn derive_json_schema_repr_wrapper(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);
-    derive_json_schema(input, true)
+    derive_json_schema(input, true, false)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
 
-fn derive_json_schema(mut input: syn::DeriveInput, repr: bool) -> syn::Result<TokenStream> {
+fn derive_json_schema(
+    mut input: syn::DeriveInput,
+    repr: bool,
+    dbt: bool,
+) -> syn::Result<TokenStream> {
     attr::process_serde_attrs(&mut input)?;
 
     let mut cont = Container::from_ast(&input)?;
@@ -165,6 +177,13 @@ fn derive_json_schema(mut input: syn::DeriveInput, repr: bool) -> syn::Result<To
         schema_exprs::expr_for_repr(&cont)?
     } else {
         schema_exprs::expr_for_container(&cont)
+    };
+    let schema_expr = if dbt {
+        quote! {
+            dbt_yaml::maybe_transformable::maybe_transformable(#schema_expr)
+        }
+    } else {
+        schema_expr
     };
 
     Ok(quote! {

@@ -176,6 +176,8 @@ pub use crate::spanned::with_filename;
 pub use crate::shouldbe::{ShouldBe, WhyNot};
 #[doc(inline)]
 pub use crate::value::{from_value, to_value, Index, Number, Sequence, Value};
+#[cfg(feature = "schemars")]
+pub use crate::verbatim::maybe_transformable;
 #[doc(inline)]
 pub use crate::verbatim::Verbatim;
 
@@ -281,4 +283,4 @@ pub mod __private {
 }
 
 #[cfg(feature = "schemars")]
-pub use dbt_yaml_schemars_derive::JsonSchema;
+pub use dbt_yaml_schemars_derive::{DbtSchema, JsonSchema};

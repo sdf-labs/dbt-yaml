@@ -183,6 +183,181 @@ where
     }
 }
 
+#[cfg(feature = "schemars")]
+/// Module containing `MaybeTransformable` wrapper type for `DbtSchema` derive.
+pub mod maybe_transformable {
+    use std::collections::BTreeMap;
+
+    const TRANSFORMABLE_STRING_PATTERN: &str = "^\\{.*\\}$";
+
+    /// Transforms the schema of a field to allow it to be either the original
+    /// type or a string matching the `TRANSFORMABLE_STRING_PATTERN`.
+    fn make_stringable_field(schema: schemars::schema::Schema) -> schemars::schema::Schema {
+        let schemars::schema::Schema::Object(mut schema_object) = schema else {
+            return schema;
+        };
+
+        if let Some(obj) = &mut schema_object.object {
+            if let Some(add) = obj.additional_properties.take() {
+                obj.additional_properties = Some(Box::new(make_stringable_field(*add)));
+            }
+        }
+        if let Some(arr) = &mut schema_object.array {
+            if let Some(items) = arr.items.take() {
+                match items {
+                    schemars::schema::SingleOrVec::Single(sch) => {
+                        arr.items = Some(schemars::schema::SingleOrVec::Single(Box::new(
+                            make_stringable_field(*sch),
+                        )));
+                    }
+                    schemars::schema::SingleOrVec::Vec(schs) => {
+                        arr.items = Some(schemars::schema::SingleOrVec::Vec(
+                            schs.into_iter().map(make_stringable_field).collect(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        let is_primitive = match schema_object.instance_type {
+            Some(schemars::schema::SingleOrVec::Single(ref mut ty)) => match **ty {
+                schemars::schema::InstanceType::Boolean
+                | schemars::schema::InstanceType::Integer
+                | schemars::schema::InstanceType::Number => true,
+                _ => false,
+            },
+            Some(schemars::schema::SingleOrVec::Vec(ref mut tys)) => {
+                tys.iter().any(|ty| match *ty {
+                    schemars::schema::InstanceType::Boolean
+                    | schemars::schema::InstanceType::Integer
+                    | schemars::schema::InstanceType::Number => true,
+                    _ => false,
+                })
+            }
+            _ => false,
+        };
+
+        if is_primitive {
+            let subschema = schemars::schema::SubschemaValidation {
+                any_of: Some(vec![
+                    schemars::schema::Schema::Object(schema_object),
+                    schemars::schema::Schema::Object(schemars::schema::SchemaObject {
+                        instance_type: Some(schemars::schema::SingleOrVec::Single(Box::new(
+                            schemars::schema::InstanceType::String,
+                        ))),
+                        string: Some(Box::new(schemars::schema::StringValidation {
+                            pattern: Some(TRANSFORMABLE_STRING_PATTERN.to_string()),
+                            ..Default::default()
+                        })),
+                        ..Default::default()
+                    }),
+                ]),
+                ..Default::default()
+            };
+            schemars::schema::Schema::Object(schemars::schema::SchemaObject {
+                subschemas: Some(Box::new(subschema)),
+                ..Default::default()
+            })
+        } else {
+            schemars::schema::Schema::Object(schema_object)
+        }
+    }
+
+    /// Transforms the given schema to allow transformable fields to be strings.
+    pub fn maybe_transformable(schema: schemars::schema::Schema) -> schemars::schema::Schema {
+        if !SHOULD_GENERATE_PRE_TRANSFORMATION_SCHEMA.with(|flag| flag.get()) {
+            return schema;
+        }
+        let schemars::schema::Schema::Object(mut schema_object) = schema else {
+            return schema;
+        };
+
+        match &schema_object.instance_type {
+            Some(schemars::schema::SingleOrVec::Single(ty)) => match **ty {
+                schemars::schema::InstanceType::Object => {
+                    // This is a struct -- apply the transformation to all
+                    // fields in the struct
+                    if let Some(obj) = schema_object.object.take() {
+                        let properties = obj
+                            .properties
+                            .into_iter()
+                            .map(|(key, value)| (key, make_stringable_field(value)))
+                            .collect::<BTreeMap<_, _>>();
+                        let additional_properties = obj
+                            .additional_properties
+                            .map(|add| Box::new(make_stringable_field(*add)));
+                        schema_object.object = Some(Box::new(schemars::schema::ObjectValidation {
+                            properties,
+                            additional_properties,
+                            ..*obj
+                        }));
+                    }
+                }
+                schemars::schema::InstanceType::Array => {
+                    // This is a Vec -- apply the transformation to the items
+                    if let Some(arr) = &mut schema_object.array {
+                        if let Some(items) = arr.items.take() {
+                            match items {
+                                schemars::schema::SingleOrVec::Single(sch) => {
+                                    arr.items = Some(schemars::schema::SingleOrVec::Single(
+                                        Box::new(make_stringable_field(*sch)),
+                                    ));
+                                }
+                                schemars::schema::SingleOrVec::Vec(schs) => {
+                                    arr.items = Some(schemars::schema::SingleOrVec::Vec(
+                                        schs.into_iter().map(make_stringable_field).collect(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            },
+            None => {
+                if let Some(subschemas) = &mut schema_object.subschemas {
+                    // This is an enum
+                    if let Some(any_of) = &mut subschemas.any_of {
+                        // This is an untagged enum -- add a stringable alternative
+                        any_of.push(schemars::schema::Schema::Object(
+                            schemars::schema::SchemaObject {
+                                instance_type: Some(schemars::schema::SingleOrVec::Single(
+                                    Box::new(schemars::schema::InstanceType::String),
+                                )),
+                                string: Some(Box::new(schemars::schema::StringValidation {
+                                    pattern: Some(TRANSFORMABLE_STRING_PATTERN.to_string()),
+                                    ..Default::default()
+                                })),
+                                ..Default::default()
+                            },
+                        ));
+                    }
+                    if let Some(one_of) = &mut subschemas.one_of {
+                        // This is a tagged enum -- apply the transformation to each variant
+                        *one_of = one_of.drain(..).map(make_stringable_field).collect();
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        schemars::schema::Schema::Object(schema_object)
+    }
+
+    /// Whether `schemar_for!` should generate a schema that allows
+    /// transformable fields to be strings. Call this before generating any
+    /// schemas to set the behavior for all subsequent schema generation.
+    pub fn set_generate_pre_transformation_schema(value: bool) {
+        SHOULD_GENERATE_PRE_TRANSFORMATION_SCHEMA.with(|flag| flag.set(value));
+    }
+
+    thread_local! {
+        static SHOULD_GENERATE_PRE_TRANSFORMATION_SCHEMA: std::cell::Cell<bool> = const {
+            std::cell::Cell::new(false)
+        };
+    }
+}
+
 pub(crate) fn should_transform_any() -> bool {
     SHOULD_TRANSFORM_ANY.with(|flag| flag.get())
 }

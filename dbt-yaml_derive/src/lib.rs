@@ -12,9 +12,9 @@ use heck::ToPascalCase as _;
 use heck::ToSnakeCase as _;
 use proc_macro::TokenStream;
 use quote::quote;
+use syn::DeriveInput;
 use syn::parse_macro_input;
 use syn::spanned::Spanned;
-use syn::DeriveInput;
 
 struct Variant<'a> {
     ident: syn::Ident,
