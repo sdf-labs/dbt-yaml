@@ -671,7 +671,10 @@ fn extract_map_value_type(field: &Field) -> (syn::Type, Option<TokenStream>) {
     // Try to extract the value type from common map types
     if let syn::Type::Path(type_path) = &full_ty {
         if let Some(segment) = type_path.path.segments.last() {
-            if segment.ident == "BTreeMap" || segment.ident == "HashMap" {
+            if segment.ident == "BTreeMap"
+                || segment.ident == "HashMap"
+                || segment.ident == "IndexMap"
+            {
                 if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                     if args.args.len() == 2 {
                         if let (
