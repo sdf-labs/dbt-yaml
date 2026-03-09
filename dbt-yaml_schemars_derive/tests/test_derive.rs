@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 use dbt_yaml::{Value, Verbatim};
+use indexmap::IndexMap;
 use indoc::indoc;
 use std::collections::HashMap;
 
@@ -15,7 +16,7 @@ struct BasicStruct {
     c: i32,
     #[schemars(skip_serializing_if = "Option::is_none")]
     d: Option<String>,
-    e: HashMap<String, String>,
+    e: IndexMap<String, String>,
 }
 
 #[derive(JsonSchema)]
@@ -341,7 +342,7 @@ struct DbtEntity {
     a: bool,
     b: Option<StringOrBool>,
     c: IntOrFloat,
-    d: HashMap<String, i64>,
+    d: IndexMap<String, i64>,
     e: HashMap<String, Value>,
 }
 
