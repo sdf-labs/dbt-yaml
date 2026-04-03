@@ -1,6 +1,6 @@
 [package]
 name = "dbt-yaml"
-version = "0.9.2"
+version = "0.9.3"
 authors = ["Bo Lin <bo.lin@dbtlabs.com>", "David Tolnay <dtolnay@gmail.com>"]
 categories = ["encoding", "parser-implementations"]
 description = "YAML data format for Serde"
