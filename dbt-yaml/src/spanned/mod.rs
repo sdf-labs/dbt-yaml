@@ -48,6 +48,17 @@ impl<T> Spanned<T> {
         }
     }
 
+    /// Transform the captured span by applying the given function.
+    pub fn map_span<F>(self, f: F) -> Self
+    where
+        F: FnOnce(Span) -> Span,
+    {
+        Self {
+            span: f(self.span),
+            ..self
+        }
+    }
+
     /// Consumes the [Spanned] and returns the inner node.
     pub fn into_inner(self) -> T {
         self.node

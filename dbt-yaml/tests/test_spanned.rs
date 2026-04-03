@@ -339,6 +339,42 @@ fn test_with_filename() {
     );
 }
 
+#[test]
+fn test_transform_spanned() {
+    #[derive(Deserialize, Serialize, PartialEq, Debug)]
+    struct Point {
+        x: f64,
+        y: f64,
+    }
+
+    let yaml = indoc! {"
+        x: 1.0
+        y: 2.0
+    "};
+
+    let spanned_point: Spanned<Point> = dbt_yaml::from_str(yaml).unwrap();
+    let transformed = spanned_point.map(|point| Point {
+        x: point.x * 2.0,
+        y: point.y * 3.0,
+    });
+    assert_eq!(*transformed, Point { x: 2.0, y: 6.0 });
+
+    let transformed = transformed.map_span(|_| Span::default());
+    assert_eq!(*transformed, Point { x: 2.0, y: 6.0 });
+    assert_eq!(transformed.span(), &Span::default());
+
+    #[cfg(feature = "filename")]
+    {
+        let spanned_point: Spanned<Point> = dbt_yaml::from_str(yaml).unwrap();
+        let transformed = spanned_point.map_span(|span| span.with_filename(std::path::PathBuf::from("newfile.yml")));
+        assert_eq!(*transformed, Point { x: 1.0, y: 2.0 });
+        assert_eq!(
+            transformed.span().filename.as_deref(),
+            Some(std::path::PathBuf::from("newfile.yml")).as_ref()
+        );
+    }
+}
+
 #[cfg(feature = "schemars")]
 #[test]
 fn test_schemars() {
