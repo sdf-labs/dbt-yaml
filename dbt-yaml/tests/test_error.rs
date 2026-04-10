@@ -108,6 +108,91 @@ fn test_unknown_anchor() {
 }
 
 #[test]
+fn test_duplicate_scalar_anchor() {
+    // Two scalar anchors with the same name: the second should be rejected.
+    let yaml = indoc! {"
+        first: &dup scalar_a
+        second: &dup scalar_b
+        result: *dup
+    "};
+    let expected = "found duplicate anchor; first occurrence at line 1 column 8 at line 2 column 9";
+    test_error::<Value>(yaml, expected);
+}
+
+#[test]
+fn test_duplicate_scalar_anchor_is_flagged() {
+    let yaml = indoc! {"
+        first: &dup scalar_a
+        second: &dup scalar_b
+        result: *dup
+    "};
+    let err = dbt_yaml::from_str::<Value>(yaml).unwrap_err();
+    assert!(
+        err.is_duplicate_anchor(),
+        "expected is_duplicate_anchor() == true, got error: {err}"
+    );
+    // Second occurrence location is the error site.
+    let loc = err.location().expect("error should carry a location");
+    assert_eq!(loc.line(), 2, "second occurrence should be on line 2");
+}
+
+#[test]
+fn test_duplicate_sequence_anchor() {
+    // Two sequence anchors with the same name.
+    let yaml = indoc! {"
+        first: &dup
+          - a
+          - b
+        second: &dup
+          - c
+          - d
+    "};
+    let result = dbt_yaml::from_str::<Value>(yaml);
+    let err = result.unwrap_err();
+    assert!(err.is_duplicate_anchor());
+    let msg = err.to_string();
+    assert!(
+        msg.contains("found duplicate anchor"),
+        "unexpected message: {msg}"
+    );
+    assert!(
+        msg.contains("first occurrence at line 1"),
+        "should mention first occurrence line, got: {msg}"
+    );
+}
+
+#[test]
+fn test_duplicate_mapping_anchor() {
+    // Two mapping anchors with the same name.
+    let yaml = indoc! {"
+        first: &dup
+          name: id
+        second: &dup
+          name: other_id
+    "};
+    let result = dbt_yaml::from_str::<Value>(yaml);
+    let err = result.unwrap_err();
+    assert!(err.is_duplicate_anchor());
+}
+
+#[test]
+fn test_non_duplicate_anchor_is_not_flagged() {
+    // Sanity check: distinct anchor names must not trigger the error.
+    let yaml = indoc! {"
+        first: &anchor_a
+          - x
+        second: &anchor_b
+          - y
+        use_a: *anchor_a
+        use_b: *anchor_b
+    "};
+    assert!(
+        dbt_yaml::from_str::<Value>(yaml).is_ok(),
+        "distinct anchors should parse without error"
+    );
+}
+
+#[test]
 fn test_ignored_unknown_anchor() {
     #[derive(Deserialize, Debug)]
     pub struct Wrapper {

@@ -59,7 +59,7 @@ impl<'input> Loader<'input> {
         let first = self.document_count == 0;
         self.document_count += 1;
 
-        let mut anchors = BTreeMap::new();
+        let mut anchors: BTreeMap<_, (usize, Mark)> = BTreeMap::new();
         let mut document = Document {
             events: Vec::new(),
             error: None,
@@ -93,7 +93,7 @@ impl<'input> Loader<'input> {
                     return Some(document);
                 }
                 YamlEvent::Alias(alias) => match anchors.get(&alias) {
-                    Some(id) => Event::Alias(*id),
+                    Some((id, _)) => Event::Alias(*id),
                     None => {
                         document.error =
                             Some(error::new(ErrorImpl::UnknownAnchor(mark.into())).shared());
@@ -102,16 +102,36 @@ impl<'input> Loader<'input> {
                 },
                 YamlEvent::Scalar(mut scalar) => {
                     if let Some(anchor) = scalar.anchor.take() {
+                        if let Some((_, first_mark)) = anchors.get(&anchor) {
+                            document.error = Some(
+                                error::new(ErrorImpl::DuplicateAnchor {
+                                    first: (*first_mark).into(),
+                                    second: mark.into(),
+                                })
+                                .shared(),
+                            );
+                            return Some(document);
+                        }
                         let id = anchors.len();
-                        anchors.insert(anchor, id);
+                        anchors.insert(anchor, (id, mark));
                         document.aliases.insert(id, document.events.len());
                     }
                     Event::Scalar(scalar)
                 }
                 YamlEvent::SequenceStart(mut sequence_start) => {
                     if let Some(anchor) = sequence_start.anchor.take() {
+                        if let Some((_, first_mark)) = anchors.get(&anchor) {
+                            document.error = Some(
+                                error::new(ErrorImpl::DuplicateAnchor {
+                                    first: (*first_mark).into(),
+                                    second: mark.into(),
+                                })
+                                .shared(),
+                            );
+                            return Some(document);
+                        }
                         let id = anchors.len();
-                        anchors.insert(anchor, id);
+                        anchors.insert(anchor, (id, mark));
                         document.aliases.insert(id, document.events.len());
                     }
                     Event::SequenceStart(sequence_start)
@@ -119,8 +139,18 @@ impl<'input> Loader<'input> {
                 YamlEvent::SequenceEnd => Event::SequenceEnd,
                 YamlEvent::MappingStart(mut mapping_start) => {
                     if let Some(anchor) = mapping_start.anchor.take() {
+                        if let Some((_, first_mark)) = anchors.get(&anchor) {
+                            document.error = Some(
+                                error::new(ErrorImpl::DuplicateAnchor {
+                                    first: (*first_mark).into(),
+                                    second: mark.into(),
+                                })
+                                .shared(),
+                            );
+                            return Some(document);
+                        }
                         let id = anchors.len();
-                        anchors.insert(anchor, id);
+                        anchors.insert(anchor, (id, mark));
                         document.aliases.insert(id, document.events.len());
                     }
                     Event::MappingStart(mapping_start)
