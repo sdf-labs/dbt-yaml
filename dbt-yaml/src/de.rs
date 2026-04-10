@@ -975,6 +975,16 @@ fn parse_unsigned_int<T>(
     if digits_but_not_number(scalar) {
         return None;
     }
+    // YAML 1.1 compat: allow underscore digit separators (e.g. 24_000_000).
+    // Requires the first char to be a digit (no leading underscore) and all
+    // chars to be digits or underscores, matching PyYAML's behaviour.
+    if unpositive.contains('_')
+        && unpositive.as_bytes().first().map_or(false, u8::is_ascii_digit)
+        && unpositive.bytes().all(|b| b.is_ascii_digit() || b == b'_')
+    {
+        let stripped = unpositive.replace('_', "");
+        return from_str_radix(&stripped, 10).ok();
+    }
     from_str_radix(unpositive, 10).ok()
 }
 
@@ -1035,6 +1045,17 @@ fn parse_signed_int<T>(
     if digits_but_not_number(scalar) {
         return None;
     }
+    // YAML 1.1 compat: allow underscore digit separators (e.g. -24_000_000).
+    // Strip any leading '-' before validating, then re-apply it when stripping.
+    if unpositive.contains('_') {
+        let magnitude = unpositive.strip_prefix('-').unwrap_or(unpositive);
+        if magnitude.as_bytes().first().map_or(false, u8::is_ascii_digit)
+            && magnitude.bytes().all(|b| b.is_ascii_digit() || b == b'_')
+        {
+        let stripped = unpositive.replace('_', "");
+        return from_str_radix(&stripped, 10).ok();
+        }
+    }
     from_str_radix(unpositive, 10).ok()
 }
 
@@ -1063,6 +1084,18 @@ fn parse_negative_int<T>(
     if digits_but_not_number(scalar) {
         return None;
     }
+    // YAML 1.1 compat: allow underscore digit separators (e.g. -24_000_000).
+    // scalar here is always negative (e.g. "-24_000_000"), so validate the
+    // magnitude (the part after '-') before stripping.
+    if scalar.contains('_') {
+        let magnitude = scalar.strip_prefix('-').unwrap_or(scalar);
+        if magnitude.as_bytes().first().map_or(false, u8::is_ascii_digit)
+            && magnitude.bytes().all(|b| b.is_ascii_digit() || b == b'_')
+        {
+        let stripped = scalar.replace('_', "");
+        return from_str_radix(&stripped, 10).ok();
+        }
+    }
     from_str_radix(scalar, 10).ok()
 }
 
@@ -1087,6 +1120,20 @@ pub(crate) fn parse_f64(scalar: &str) -> Option<f64> {
     if let Ok(float) = unpositive.parse::<f64>() {
         if float.is_finite() {
             return Some(float);
+        }
+    }
+    // YAML 1.1 compat: allow underscore digit separators (e.g. 24_000_000.0).
+    // Strip any leading '-' before validating so that "-24_000.0" is accepted.
+    // The first char of the magnitude must be a digit (no leading underscore).
+    if unpositive.contains('_') {
+        let magnitude = unpositive.strip_prefix('-').unwrap_or(unpositive);
+        if magnitude.as_bytes().first().map_or(false, u8::is_ascii_digit) {
+        let stripped = unpositive.replace('_', "");
+        if let Ok(float) = stripped.parse::<f64>() {
+            if float.is_finite() {
+                return Some(float);
+                }
+            }
         }
     }
     None

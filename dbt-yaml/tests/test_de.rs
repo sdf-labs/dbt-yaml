@@ -450,6 +450,166 @@ fn test_numbers() {
     }
 }
 
+/// Tests for YAML 1.1–style underscore digit separators (e.g. `24_000_000`).
+///
+/// dbt-core uses PyYAML which silently strips underscores when parsing numeric
+/// scalars, so `min_value: 24_000_000` becomes the integer `24000000` before
+/// any dbt code ever sees it.  dbt-fusion must do the same so that test
+/// arguments compile to plain integer/float literals in SQL rather than the
+/// underscore-delimited form that some SQL dialects (e.g. older Snowflake
+/// versions) reject.
+///
+/// See https://github.com/dbt-labs/dbt-fusion/issues/1027
+#[test]
+fn test_underscore_digit_separators_as_value() {
+    // These should parse as Value::Number, matching PyYAML's behaviour.
+    let number_cases: &[(&str, &str)] = &[
+        // -- positive integers --
+        ("1_000", "1000"),
+        ("24_000_000", "24000000"),
+        ("+24_000_000", "24000000"),
+        ("12_000_000_000", "12000000000"),
+        // multiple groups
+        ("1_2_3_4", "1234"),
+        // -- negative integers --
+        ("-24_000_000", "-24000000"),
+        ("-12_000_000_000", "-12000000000"),
+        // -- floats --
+        ("1_000.5", "1000.5"),
+        ("24_000_000.0", "24000000.0"),
+        ("-1_000.25", "-1000.25"),
+    ];
+    for &(yaml, expected) in number_cases {
+        let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
+        match value {
+            Value::Number(ref n, ..) => assert_eq!(
+                n.to_string(),
+                expected,
+                "input {yaml:?}: expected number {expected:?}"
+            ),
+            _ => panic!("expected Value::Number for {yaml:?}, got {value:?}"),
+        }
+    }
+
+    // These must stay as Value::String — they look numeric but violate the
+    // digit-separator rules (leading underscore).
+    let string_cases: &[&str] = &[
+        "_24_000",    // leading underscore
+        "_1_000_000", // leading underscore
+    ];
+    for &yaml in string_cases {
+        let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
+        match value {
+            Value::String(ref s, ..) => assert_eq!(
+                s, yaml,
+                "input {yaml:?}: expected it to remain a string"
+            ),
+            _ => panic!("expected Value::String for {yaml:?}, got {value:?}"),
+        }
+    }
+}
+
+/// Underscore digit separators deserialize correctly into concrete Rust integer
+/// and float types, not just into `Value`.
+#[test]
+fn test_underscore_digit_separators_into_rust_types() {
+    // u64
+    assert_eq!(
+        dbt_yaml::from_str::<u64>("24_000_000").unwrap(),
+        24_000_000_u64,
+    );
+    assert_eq!(
+        dbt_yaml::from_str::<u64>("12_000_000_000").unwrap(),
+        12_000_000_000_u64,
+    );
+
+    // i64 — positive
+    assert_eq!(
+        dbt_yaml::from_str::<i64>("24_000_000").unwrap(),
+        24_000_000_i64,
+    );
+    // i64 — negative
+    assert_eq!(
+        dbt_yaml::from_str::<i64>("-24_000_000").unwrap(),
+        -24_000_000_i64,
+    );
+
+    // u32
+    assert_eq!(
+        dbt_yaml::from_str::<u32>("1_000_000").unwrap(),
+        1_000_000_u32,
+    );
+
+    // f64
+    assert_eq!(
+        dbt_yaml::from_str::<f64>("24_000_000.0").unwrap(),
+        24_000_000.0_f64,
+    );
+    assert_eq!(
+        dbt_yaml::from_str::<f64>("1_000.5").unwrap(),
+        1_000.5_f64,
+    );
+    assert_eq!(
+        dbt_yaml::from_str::<f64>("-1_000.25").unwrap(),
+        -1_000.25_f64,
+    );
+}
+
+/// Reproduces the exact shape of the bug report: a test `arguments` map with
+/// underscore-delimited min/max values should deserialize as integers, not
+/// strings — so the compiled SQL contains `24000000`, not `24_000_000`.
+#[test]
+fn test_underscore_digit_separators_in_map() {
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct Args {
+        min_value: i64,
+        max_value: i64,
+    }
+
+    let yaml = indoc! {"
+        min_value: 24_000_000
+        max_value: 12_000_000_000
+    "};
+
+    let args: Args = dbt_yaml::from_str(yaml).unwrap();
+    assert_eq!(
+        args,
+        Args {
+            min_value: 24_000_000,
+            max_value: 12_000_000_000,
+        }
+    );
+
+    // Also round-trip through Value to mirror how fusion processes test kwargs.
+    let value: Value = dbt_yaml::from_str(yaml).unwrap();
+    let min = value["min_value"]
+        .as_i64()
+        .expect("min_value should be a number");
+    let max = value["max_value"]
+        .as_i64()
+        .expect("max_value should be a number");
+    assert_eq!(min, 24_000_000);
+    assert_eq!(max, 12_000_000_000);
+}
+
+/// The `Number::from_str` / `.parse::<Number>()` path also handles underscores.
+#[test]
+fn test_parse_number_with_underscore_separators() {
+    let n = "24_000_000".parse::<Number>().unwrap();
+    assert_eq!(n, Number::from(24_000_000_u64));
+    assert_eq!(n.to_string(), "24000000");
+
+    let n = "-24_000_000".parse::<Number>().unwrap();
+    assert_eq!(n, Number::from(-24_000_000_i64));
+    assert_eq!(n.to_string(), "-24000000");
+
+    let n = "12_000_000_000".parse::<Number>().unwrap();
+    assert_eq!(n, Number::from(12_000_000_000_u64));
+
+    let n = "1_000.5".parse::<Number>().unwrap();
+    assert_eq!(n.as_f64().unwrap(), 1_000.5_f64);
+}
+
 #[test]
 fn test_nan() {
     // There is no negative NaN in YAML.
