@@ -29,6 +29,10 @@ pub(crate) enum ErrorImpl {
     RepetitionLimitExceeded,
     BytesUnsupported,
     UnknownAnchor(Marker),
+    DuplicateAnchor {
+        first: Marker,
+        second: Marker,
+    },
     SerializeNestedEnum,
     ScalarInMerge,
     TaggedInMerge,
@@ -86,6 +90,11 @@ impl Error {
         } else {
             None
         }
+    }
+
+    /// Returns `true` if this error is caused by a duplicate YAML anchor name.
+    pub fn is_duplicate_anchor(&self) -> bool {
+        self.0.is_duplicate_anchor()
     }
 
     /// Returns the error message without the location information.
@@ -207,6 +216,14 @@ impl de::Error for Error {
 }
 
 impl ErrorImpl {
+    fn is_duplicate_anchor(&self) -> bool {
+        match self {
+            ErrorImpl::DuplicateAnchor { .. } => true,
+            ErrorImpl::Shared(inner) => inner.is_duplicate_anchor(),
+            _ => false,
+        }
+    }
+
     fn location(&self) -> Option<Marker> {
         self.span().map(|span| span.start)
     }
@@ -227,6 +244,7 @@ impl ErrorImpl {
             ErrorImpl::RecursionLimitExceeded(mark) | ErrorImpl::UnknownAnchor(mark) => {
                 Some(Span::from(*mark))
             }
+            ErrorImpl::DuplicateAnchor { second, .. } => Some(Span::from(*second)),
             ErrorImpl::Libyaml(err) => Some(Marker::from(err.mark()).into()),
             ErrorImpl::Shared(err) => err.span(),
             _ => None,
@@ -255,6 +273,12 @@ impl ErrorImpl {
                 f.write_str("serialization and deserialization of bytes in YAML is not implemented")
             }
             ErrorImpl::UnknownAnchor(_mark) => f.write_str("unknown anchor"),
+            ErrorImpl::DuplicateAnchor { first, .. } => write!(
+                f,
+                "found duplicate anchor; first occurrence at line {} column {}",
+                first.line(),
+                first.column(),
+            ),
             ErrorImpl::SerializeNestedEnum => {
                 f.write_str("serializing nested enums in YAML is not supported yet")
             }
