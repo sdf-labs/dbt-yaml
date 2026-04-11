@@ -115,7 +115,7 @@ fn test_duplicate_scalar_anchor() {
         second: &dup scalar_b
         result: *dup
     "};
-    let expected = "found duplicate anchor; first occurrence at line 1 column 8 at line 2 column 9";
+    let expected = "found duplicate anchor (first occurrence at line 1 column 8) at line 2 column 9";
     test_error::<Value>(yaml, expected);
 }
 

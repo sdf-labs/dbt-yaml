@@ -275,7 +275,7 @@ impl ErrorImpl {
             ErrorImpl::UnknownAnchor(_mark) => f.write_str("unknown anchor"),
             ErrorImpl::DuplicateAnchor { first, .. } => write!(
                 f,
-                "found duplicate anchor; first occurrence at line {} column {}",
+                "found duplicate anchor (first occurrence at line {} column {})",
                 first.line(),
                 first.column(),
             ),
