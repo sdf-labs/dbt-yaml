@@ -714,7 +714,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
         self.maybe_apply_transformation()?;
 
         let span = self.value.span().clone();
-        let path = self.path.clone();
+        let path = self.path;
         self.value.broadcast_end_mark();
         visitor
             .visit_newtype_struct(self)
