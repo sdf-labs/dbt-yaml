@@ -1612,6 +1612,7 @@ mod tests {
     #[test]
     fn test_string_field_null_error_contains_path() {
         #[derive(Debug, serde_derive::Deserialize)]
+        #[allow(dead_code)]
         struct MyStruct {
             field_name: String,
         }
@@ -1633,6 +1634,7 @@ mod tests {
     #[test]
     fn test_u64_field_null_error_contains_path() {
         #[derive(Debug, serde_derive::Deserialize)]
+        #[allow(dead_code)]
         struct MyStruct {
             count: u64,
         }
@@ -1649,6 +1651,7 @@ mod tests {
     #[test]
     fn test_bool_field_null_error_contains_path() {
         #[derive(Debug, serde_derive::Deserialize)]
+        #[allow(dead_code)]
         struct MyStruct {
             enabled: bool,
         }
