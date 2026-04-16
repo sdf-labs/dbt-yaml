@@ -471,7 +471,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             ),
             Value::Tagged(tagged, ..) => visitor.visit_enum(*tagged),
         }
-        .map_err(|e| error::set_span(e, span))
+        .map_err(|e| error::set_span_with_path(e, span, &self.path))
     }
 
     fn deserialize_bool<V>(mut self, visitor: V) -> Result<V::Value, Error>
@@ -487,7 +487,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             Value::Bool(v, ..) => visitor.visit_bool(v),
             other => Err(other.invalid_type(&visitor)),
         }
-        .map_err(|e| error::set_span(e, span))
+        .map_err(|e| error::set_span_with_path(e, span, &self.path))
     }
 
     fn deserialize_i8<V>(mut self, visitor: V) -> Result<V::Value, Error>
@@ -625,7 +625,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             Value::String(v, ..) => visitor.visit_string(v),
             other => Err(other.invalid_type(&visitor)),
         }
-        .map_err(|e| error::set_span(e, span))
+        .map_err(|e| error::set_span_with_path(e, span, &self.path))
     }
 
     fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Error>
@@ -655,7 +655,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             ),
             other => Err(other.invalid_type(&visitor)),
         }
-        .map_err(|e| error::set_span(e, span))
+        .map_err(|e| error::set_span_with_path(e, span, &self.path))
     }
 
     fn deserialize_option<V>(mut self, visitor: V) -> Result<V::Value, Error>
@@ -676,7 +676,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
                 is_transformed: true,
             }),
         }
-        .map_err(|e| error::set_span(e, span))
+        .map_err(|e| error::set_span_with_path(e, span, &self.path))
     }
 
     fn deserialize_unit<V>(mut self, visitor: V) -> Result<V::Value, Error>
@@ -692,7 +692,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             Value::Null(..) => visitor.visit_unit(),
             _ => Err(self.value.invalid_type(&visitor)),
         }
-        .map_err(|e| error::set_span(e, span))
+        .map_err(|e| error::set_span_with_path(e, span, &self.path))
     }
 
     fn deserialize_unit_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value, Error>
@@ -714,10 +714,11 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
         self.maybe_apply_transformation()?;
 
         let span = self.value.span().clone();
+        let path = self.path.clone();
         self.value.broadcast_end_mark();
         visitor
             .visit_newtype_struct(self)
-            .map_err(|e| error::set_span(e, span))
+            .map_err(|e| error::set_span_with_path(e, span, &path))
     }
 
     fn deserialize_seq<V>(mut self, visitor: V) -> Result<V::Value, Error>
@@ -746,7 +747,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             ),
             other => Err(other.invalid_type(&visitor)),
         }
-        .map_err(|e| error::set_span(e, span))
+        .map_err(|e| error::set_span_with_path(e, span, &self.path))
     }
 
     fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Error>
@@ -794,7 +795,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             ),
             other => Err(other.invalid_type(&visitor)),
         }
-        .map_err(|e| error::set_span(e, span))
+        .map_err(|e| error::set_span_with_path(e, span, &self.path))
     }
 
     fn deserialize_struct<V>(
@@ -830,7 +831,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             ),
             other => Err(other.invalid_type(&visitor)),
         }
-        .map_err(|e| error::set_span(e, span))
+        .map_err(|e| error::set_span_with_path(e, span, &self.path))
     }
 
     fn deserialize_enum<V>(
@@ -878,7 +879,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
                     ));
                 }
             })
-            .map_err(|e| error::set_span(e, span))
+            .map_err(|e| error::set_span_with_path(e, span, &self.path))
     }
 
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Error>
@@ -1603,5 +1604,61 @@ impl<'de, 'r, 'f> Deserializer<'de> for FlattenDeserializer<'_, 'r, 'f> {
         bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string bytes
         byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct
         map enum identifier
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_string_field_null_error_contains_path() {
+        #[derive(Debug, serde_derive::Deserialize)]
+        struct MyStruct {
+            field_name: String,
+        }
+
+        // Use a mapping value for field_name — cannot be deserialized as String
+        let result: crate::Result<MyStruct> = crate::from_str("field_name:\n  nested: value");
+        let err = result.unwrap_err();
+        let msg = err.display_no_mark().to_string();
+        assert!(
+            msg.contains("field_name"),
+            "expected error to contain 'field_name', got: {msg}"
+        );
+        assert!(
+            msg.contains("string") || msg.contains("map") || msg.contains("invalid type"),
+            "expected error to describe the type mismatch, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_u64_field_null_error_contains_path() {
+        #[derive(Debug, serde_derive::Deserialize)]
+        struct MyStruct {
+            count: u64,
+        }
+
+        let result: crate::Result<MyStruct> = crate::from_str("count: ~");
+        let err = result.unwrap_err();
+        let msg = err.display_no_mark().to_string();
+        assert!(
+            msg.contains("count"),
+            "expected error to contain 'count', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_bool_field_null_error_contains_path() {
+        #[derive(Debug, serde_derive::Deserialize)]
+        struct MyStruct {
+            enabled: bool,
+        }
+
+        let result: crate::Result<MyStruct> = crate::from_str("enabled: ~");
+        let err = result.unwrap_err();
+        let msg = err.display_no_mark().to_string();
+        assert!(
+            msg.contains("enabled"),
+            "expected error to contain 'enabled', got: {msg}"
+        );
     }
 }

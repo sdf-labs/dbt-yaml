@@ -152,6 +152,28 @@ pub(crate) fn set_span(mut error: Error, span: Span) -> Error {
     error
 }
 
+pub(crate) fn set_span_with_path(mut error: Error, span: Span, path: &Path) -> Error {
+    if let ErrorImpl::Message(_, pos) = error.0.as_mut() {
+        match pos {
+            Some(existing) => {
+                if !existing.span.is_valid() {
+                    existing.span = span;
+                }
+                if existing.path == "." {
+                    existing.path = path.to_string();
+                }
+            }
+            None => {
+                *pos = Some(Pos {
+                    span,
+                    path: path.to_string(),
+                });
+            }
+        }
+    }
+    error
+}
+
 impl Error {
     pub(crate) fn shared(self) -> Arc<ErrorImpl> {
         if let ErrorImpl::Shared(err) = *self.0 {
