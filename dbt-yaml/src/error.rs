@@ -277,10 +277,20 @@ impl ErrorImpl {
         match self {
             ErrorImpl::Message(msg, None) => f.write_str(msg),
             ErrorImpl::Message(msg, Some(Pos { span: _, path })) => {
+                f.write_str(msg)?;
                 if path != "." {
-                    write!(f, "{}: ", path)?;
+                    // Serde uses dunder-wrapped segments (__name__) as internal hidden
+                    // nodes (e.g. __additional_properties__). Strip them before display.
+                    let visible: String = path
+                        .split('.')
+                        .filter(|seg| !(seg.starts_with("__") && seg.ends_with("__")))
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    if !visible.is_empty() {
+                        write!(f, " at {}", visible)?;
+                    }
                 }
-                f.write_str(msg)
+                Ok(())
             }
             ErrorImpl::Libyaml(_) => unreachable!(),
             ErrorImpl::Io(err) => Display::fmt(err, f),

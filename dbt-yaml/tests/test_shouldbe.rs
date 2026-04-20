@@ -40,7 +40,7 @@ fn test_deserialize_str() {
     assert!(map["invalid"].isnt());
     assert_eq!(
         map["invalid"].as_err_msg().unwrap(),
-        "invalid: invalid type: map, expected i32 at line 4 column 11"
+        "invalid type: map, expected i32 at invalid at line 4 column 11"
     );
 }
 
