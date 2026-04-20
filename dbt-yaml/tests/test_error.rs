@@ -70,7 +70,7 @@ fn test_incorrect_nested_type() {
           - !C
             d: fase
     "};
-    let expected = "b[0].d: invalid type: string \"fase\", expected a boolean at line 3 column 8";
+    let expected = "invalid type: string \"fase\", expected a boolean at b[0].d at line 3 column 8";
     test_error::<A>(yaml, expected);
 }
 
@@ -431,7 +431,7 @@ fn test_invalid_scalar_type() {
     }
 
     let yaml = "x: ''\n";
-    let expected = "x: invalid type: string \"\", expected an array of length 1 at line 1 column 4";
+    let expected = "invalid type: string \"\", expected an array of length 1 at x at line 1 column 4";
     test_error::<S>(yaml, expected);
 }
 
@@ -672,7 +672,7 @@ fn test_duplicate_keys() {
             key: true
             key: false
     "};
-    let expected = ".[1].map: duplicate entry with key \"key\" at line 4 column 5";
+    let expected = "duplicate entry with key \"key\" at .[1].map at line 4 column 5";
     test_error::<Value>(yaml, expected);
     test_ignore_duplicate_keys(
         yaml,
