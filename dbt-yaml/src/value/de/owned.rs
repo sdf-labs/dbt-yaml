@@ -1617,18 +1617,9 @@ mod tests {
             field_name: String,
         }
 
-        // Use a mapping value for field_name — cannot be deserialized as String
         let result: crate::Result<MyStruct> = crate::from_str("field_name:\n  nested: value");
-        let err = result.unwrap_err();
-        let msg = err.display_no_mark().to_string();
-        assert!(
-            msg.contains("field_name"),
-            "expected error to contain 'field_name', got: {msg}"
-        );
-        assert!(
-            msg.contains("string") || msg.contains("map") || msg.contains("invalid type"),
-            "expected error to describe the type mismatch, got: {msg}"
-        );
+        let msg = result.unwrap_err().display_no_mark().to_string();
+        assert_eq!(msg, "invalid type: map, expected a string at field_name");
     }
 
     #[test]
@@ -1640,12 +1631,8 @@ mod tests {
         }
 
         let result: crate::Result<MyStruct> = crate::from_str("count: ~");
-        let err = result.unwrap_err();
-        let msg = err.display_no_mark().to_string();
-        assert!(
-            msg.contains("count"),
-            "expected error to contain 'count', got: {msg}"
-        );
+        let msg = result.unwrap_err().display_no_mark().to_string();
+        assert_eq!(msg, "invalid type: unit value, expected u64 at count");
     }
 
     #[test]
@@ -1657,11 +1644,7 @@ mod tests {
         }
 
         let result: crate::Result<MyStruct> = crate::from_str("enabled: ~");
-        let err = result.unwrap_err();
-        let msg = err.display_no_mark().to_string();
-        assert!(
-            msg.contains("enabled"),
-            "expected error to contain 'enabled', got: {msg}"
-        );
+        let msg = result.unwrap_err().display_no_mark().to_string();
+        assert_eq!(msg, "invalid type: unit value, expected a boolean at enabled");
     }
 }
