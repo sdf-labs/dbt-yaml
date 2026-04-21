@@ -1240,10 +1240,11 @@ impl<'de, 'u, 'f> MapAccess<'de> for MapDeserializer<'_, 'u, 'f> {
             Some(value) => seed.deserialize(ValueDeserializer::new_with(
                 value,
                 match self.current_key {
-                    Some(ref key) => Path::Map {
+                    Some(ref key) if !crate::is_flatten_key(key.as_bytes()) => Path::Map {
                         parent: &self.path,
                         key,
                     },
+                    Some(_) => self.path,
                     None => Path::Unknown { parent: &self.path },
                 },
                 self.unused_key_callback
@@ -1428,13 +1429,8 @@ impl<'de> MapAccess<'de> for StructDeserializer<'_, '_, '_> {
             None if self.has_unprocessed_flatten_keys() => {
                 self.flatten_keys_done += 1;
 
-                let path = match self.current_key {
-                    Some(ref key) => Path::Map {
-                        parent: &self.path,
-                        key,
-                    },
-                    None => Path::Unknown { parent: &self.path },
-                };
+                // Flatten keys are always dunder-wrapped; do not add them to the path.
+                let path = self.path;
 
                 if self.has_unprocessed_flatten_keys() {
                     let rest = self.rest.drain(..).collect::<Mapping>();
