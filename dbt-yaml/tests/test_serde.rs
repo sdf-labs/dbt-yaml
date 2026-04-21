@@ -582,3 +582,84 @@ fn test_long_string() {
 
     test_serde(&thing, yaml);
 }
+
+#[cfg(feature = "flatten_dunder")]
+#[test]
+fn test_dunder_path_hidden_in_error() {
+    // Dunder-named fields act as serde flatten containers when deserializing from
+    // a Value. When deserialization fails inside them, the dunder segment should
+    // not appear in the error path.
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct Outer {
+        __inner__: Inner,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct Inner {
+        label: String,
+    }
+
+    // Parse to Value first, then deserialize — this exercises ValueDeserializer
+    // (owned.rs) where the flatten_dunder path suppression lives.
+    // Use a String field because deserialize_string propagates path info via
+    // set_span_with_path, unlike numeric types that use the value-level set_span.
+    let value: Value = dbt_yaml::from_str("label: ~").unwrap();
+    let result = dbt_yaml::from_value::<Outer>(value);
+    let error = result.unwrap_err().to_string();
+    assert!(
+        !error.contains("__inner__"),
+        "error path should not contain dunder key '__inner__', got: {error}"
+    );
+    assert!(
+        error.contains("label"),
+        "error path should contain 'label', got: {error}"
+    );
+}
+
+#[cfg(feature = "flatten_dunder")]
+#[test]
+fn test_mixed_dunder_path_only_hides_dunder_segments() {
+    // A path with a mix of dunder and non-dunder nodes should suppress only
+    // the dunder segments while preserving all non-dunder segments.
+    //
+    // Struct hierarchy:  Outer ──(dunder)──> __inner__: Inner ──> sub: Sub ──> value: String
+    // Expected path in error: "sub.value" (not "__inner__.sub.value")
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct Outer {
+        name: String,
+        __inner__: Inner,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct Inner {
+        sub: Sub,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct Sub {
+        value: String,
+    }
+
+    // 'name' is a non-dunder field; 'sub' and 'value' live under the dunder '__inner__'.
+    // Null value for 'value' should show "sub.value" in the error, not "__inner__.sub.value".
+    let value: Value = dbt_yaml::from_str("name: hello\nsub:\n  value: ~").unwrap();
+    let result = dbt_yaml::from_value::<Outer>(value);
+    let error = result.unwrap_err().to_string();
+    assert!(
+        !error.contains("__inner__"),
+        "error path should not contain dunder segment '__inner__', got: {error}"
+    );
+    assert!(
+        error.contains("sub"),
+        "error path should contain 'sub', got: {error}"
+    );
+    assert!(
+        error.contains("value"),
+        "error path should contain 'value', got: {error}"
+    );
+}
