@@ -687,3 +687,36 @@ fn test_duplicate_keys() {
         "- x: true\n- map:\n    key: false\n",
     );
 }
+
+#[test]
+fn test_node_path_string_field() {
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct MyStruct {
+        field_name: String,
+    }
+    let expected = "invalid type: map, expected a string at field_name at line 2 column 3";
+    test_error::<MyStruct>("field_name:\n  nested: value", expected);
+}
+
+#[test]
+fn test_node_path_u64_field() {
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct MyStruct {
+        count: u64,
+    }
+    let expected = "invalid type: unit value, expected u64 at count at line 1 column 8";
+    test_error::<MyStruct>("count: ~", expected);
+}
+
+#[test]
+fn test_node_path_bool_field() {
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct MyStruct {
+        enabled: bool,
+    }
+    let expected = "invalid type: unit value, expected a boolean at enabled at line 1 column 10";
+    test_error::<MyStruct>("enabled: ~", expected);
+}
