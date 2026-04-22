@@ -940,7 +940,9 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
         self.value.broadcast_end_mark();
         maybe_why_not!(
             self.value,
-            visitor.visit_unit().map_err(|e| error::set_span(e, span, path))
+            visitor
+                .visit_unit()
+                .map_err(|e| error::set_span(e, span, path))
         )
     }
 }
