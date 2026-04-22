@@ -64,10 +64,10 @@ use crate::{Error, Value};
 ///    assert_eq!(outer.items[0].as_ref(), Some(&Inner { field: 1 }));
 ///    assert!(outer.items[1].isnt());
 ///    assert_eq!(outer.items[1].as_err_msg().unwrap(),
-///               "invalid type: string \"2\", expected i32 at line 4 column 19");
+///               "items[1]: invalid type: string \"2\", expected i32 at line 4 column 19");
 ///    assert!(outer.items[2].isnt());
 ///    assert_eq!(outer.items[2].as_err_msg().unwrap(),
-///               "missing field `field` at line 5 column 12");
+///               "items[2]: missing field `field` at line 5 column 12");
 ///
 ///    Ok(())
 /// }

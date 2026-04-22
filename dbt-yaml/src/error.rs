@@ -29,10 +29,7 @@ pub(crate) enum ErrorImpl {
     RepetitionLimitExceeded,
     BytesUnsupported,
     UnknownAnchor(Marker),
-    DuplicateAnchor {
-        first: Marker,
-        second: Marker,
-    },
+    DuplicateAnchor { first: Marker, second: Marker },
     SerializeNestedEnum,
     ScalarInMerge,
     TaggedInMerge,
@@ -136,23 +133,7 @@ pub(crate) fn fix_mark(mut error: Error, mark: libyaml::Mark, path: Path) -> Err
     error
 }
 
-pub(crate) fn set_span(mut error: Error, span: Span) -> Error {
-    if let ErrorImpl::Message(_, pos) = error.0.as_mut() {
-        if let Some(pos) = pos {
-            if !pos.span.is_valid() {
-                pos.span = span;
-            }
-        } else {
-            *pos = Some(Pos {
-                span,
-                path: ".".to_string(),
-            })
-        }
-    }
-    error
-}
-
-pub(crate) fn set_span_with_path(mut error: Error, span: Span, path: &Path) -> Error {
+pub(crate) fn set_span(mut error: Error, span: Span, path: &Path) -> Error {
     if let ErrorImpl::Message(_, pos) = error.0.as_mut() {
         match pos {
             Some(existing) => {
