@@ -343,7 +343,7 @@ impl Value {
                 Value::Number(n, ..) => n.deserialize_any(visitor),
                 other => Err(other.invalid_type(&visitor)),
             }
-            .map_err(|e| error::set_span(e, span))
+            .map_err(|e| error::set_span(e, span, &Path::Root))
         )
     }
 
@@ -352,6 +352,7 @@ impl Value {
         error::set_span(
             de::Error::invalid_type(self.unexpected(), exp),
             self.span().clone(),
+            &Path::Root,
         )
     }
 

@@ -471,7 +471,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             ),
             Value::Tagged(tagged, ..) => visitor.visit_enum(*tagged),
         }
-        .map_err(|e| error::set_span_with_path(e, span, &self.path))
+        .map_err(|e| error::set_span(e, span, &self.path))
     }
 
     fn deserialize_bool<V>(mut self, visitor: V) -> Result<V::Value, Error>
@@ -487,7 +487,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             Value::Bool(v, ..) => visitor.visit_bool(v),
             other => Err(other.invalid_type(&visitor)),
         }
-        .map_err(|e| error::set_span_with_path(e, span, &self.path))
+        .map_err(|e| error::set_span(e, span, &self.path))
     }
 
     fn deserialize_i8<V>(mut self, visitor: V) -> Result<V::Value, Error>
@@ -625,7 +625,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             Value::String(v, ..) => visitor.visit_string(v),
             other => Err(other.invalid_type(&visitor)),
         }
-        .map_err(|e| error::set_span_with_path(e, span, &self.path))
+        .map_err(|e| error::set_span(e, span, &self.path))
     }
 
     fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Error>
@@ -655,7 +655,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             ),
             other => Err(other.invalid_type(&visitor)),
         }
-        .map_err(|e| error::set_span_with_path(e, span, &self.path))
+        .map_err(|e| error::set_span(e, span, &self.path))
     }
 
     fn deserialize_option<V>(mut self, visitor: V) -> Result<V::Value, Error>
@@ -676,7 +676,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
                 is_transformed: true,
             }),
         }
-        .map_err(|e| error::set_span_with_path(e, span, &self.path))
+        .map_err(|e| error::set_span(e, span, &self.path))
     }
 
     fn deserialize_unit<V>(mut self, visitor: V) -> Result<V::Value, Error>
@@ -692,7 +692,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             Value::Null(..) => visitor.visit_unit(),
             _ => Err(self.value.invalid_type(&visitor)),
         }
-        .map_err(|e| error::set_span_with_path(e, span, &self.path))
+        .map_err(|e| error::set_span(e, span, &self.path))
     }
 
     fn deserialize_unit_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value, Error>
@@ -718,7 +718,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
         self.value.broadcast_end_mark();
         visitor
             .visit_newtype_struct(self)
-            .map_err(|e| error::set_span_with_path(e, span, &path))
+            .map_err(|e| error::set_span(e, span, &path))
     }
 
     fn deserialize_seq<V>(mut self, visitor: V) -> Result<V::Value, Error>
@@ -747,7 +747,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             ),
             other => Err(other.invalid_type(&visitor)),
         }
-        .map_err(|e| error::set_span_with_path(e, span, &self.path))
+        .map_err(|e| error::set_span(e, span, &self.path))
     }
 
     fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Error>
@@ -795,7 +795,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             ),
             other => Err(other.invalid_type(&visitor)),
         }
-        .map_err(|e| error::set_span_with_path(e, span, &self.path))
+        .map_err(|e| error::set_span(e, span, &self.path))
     }
 
     fn deserialize_struct<V>(
@@ -831,7 +831,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             ),
             other => Err(other.invalid_type(&visitor)),
         }
-        .map_err(|e| error::set_span_with_path(e, span, &self.path))
+        .map_err(|e| error::set_span(e, span, &self.path))
     }
 
     fn deserialize_enum<V>(
@@ -879,7 +879,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
                     ));
                 }
             })
-            .map_err(|e| error::set_span_with_path(e, span, &self.path))
+            .map_err(|e| error::set_span(e, span, &self.path))
     }
 
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Error>
@@ -896,9 +896,10 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
         maybe_expecting_should_be!(self, deserialize_ignored_any, visitor);
 
         let span = self.value.span().clone();
+        let path = self.path;
         self.value.broadcast_end_mark();
         drop(self);
-        visitor.visit_unit().map_err(|e| error::set_span(e, span))
+        visitor.visit_unit().map_err(|e| error::set_span(e, span, &path))
     }
 }
 
@@ -1172,7 +1173,7 @@ impl<'de, 'u, 'f> SeqAccess<'de> for SeqDeserializer<'_, 'u, 'f> {
                 );
                 seed.deserialize(deserializer)
                     .map(Some)
-                    .map_err(|e| error::set_span(e, span))
+                    .map_err(|e| error::set_span(e, span, &self.path))
             }
             None => Ok(None),
         }

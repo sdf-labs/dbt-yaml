@@ -91,7 +91,7 @@ fn test_deserialize_value() {
     );
     assert_eq!(
         thing.invalid.as_err_msg().unwrap(),
-        "invalid type: string \"Expected a number\", expected i32 at line 5 column 14"
+        "invalid: invalid type: string \"Expected a number\", expected i32 at line 5 column 14"
     );
 }
 
@@ -143,7 +143,7 @@ fn test_nested_transformer_error() {
     assert!(thing2.isnt());
     assert_eq!(
         thing2.as_err_msg().unwrap(),
-        "invalid type: floating point `3.14`, expected i32 at line 4 column 14"
+        ".[2]: invalid type: floating point `3.14`, expected i32 at line 4 column 14"
     );
 
     // Owned
@@ -174,7 +174,7 @@ fn test_nested_transformer_error() {
     assert!(thing2.isnt());
     assert_eq!(
         thing2.as_err_msg().unwrap(),
-        "invalid type: floating point `3.14`, expected i32 at line 4 column 14"
+        ".[2]: invalid type: floating point `3.14`, expected i32 at line 4 column 14"
     );
 }
 
