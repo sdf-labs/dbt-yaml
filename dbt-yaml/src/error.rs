@@ -133,7 +133,7 @@ pub(crate) fn fix_mark(mut error: Error, mark: libyaml::Mark, path: Path) -> Err
     error
 }
 
-pub(crate) fn set_span(mut error: Error, span: Span, path: &Path) -> Error {
+pub(crate) fn set_span(mut error: Error, span: Span, path: Path) -> Error {
     if let ErrorImpl::Message(_, pos) = error.0.as_mut() {
         match pos {
             Some(existing) => {

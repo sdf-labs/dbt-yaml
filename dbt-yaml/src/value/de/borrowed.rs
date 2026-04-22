@@ -469,7 +469,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                 ),
                 Value::Tagged(tagged, ..) => visitor.visit_enum(&**tagged),
             }
-            .map_err(|e| error::set_span(e, span, &path))
+            .map_err(|e| error::set_span(e, span, path))
         )
     }
 
@@ -488,7 +488,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                 Value::Bool(v, ..) => visitor.visit_bool(*v),
                 other => Err(other.invalid_type(&visitor)),
             }
-            .map_err(|e| error::set_span(e, span, &path))
+            .map_err(|e| error::set_span(e, span, path))
         )
     }
 
@@ -622,7 +622,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                 Value::String(v, ..) => visitor.visit_borrowed_str(v),
                 other => Err(other.invalid_type(&visitor)),
             }
-            .map_err(|e| error::set_span(e, span, &path))
+            .map_err(|e| error::set_span(e, span, path))
         )
     }
 
@@ -655,7 +655,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                 ),
                 other => Err(other.invalid_type(&visitor)),
             }
-            .map_err(|e| error::set_span(e, span, &path))
+            .map_err(|e| error::set_span(e, span, path))
         )
     }
 
@@ -685,7 +685,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                     self.field_transformer,
                 )),
             }
-            .map_err(|e| error::set_span(e, span, &path))
+            .map_err(|e| error::set_span(e, span, path))
         )
     }
 
@@ -704,7 +704,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                 Value::Null(..) => visitor.visit_unit(),
                 _ => Err(self.value.invalid_type(&visitor)),
             }
-            .map_err(|e| error::set_span(e, span, &path))
+            .map_err(|e| error::set_span(e, span, path))
         )
     }
 
@@ -753,7 +753,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                     self.unused_key_callback,
                     self.field_transformer
                 ))
-                .map_err(|e| error::set_span(e, span, &path))
+                .map_err(|e| error::set_span(e, span, path))
         )
     }
 
@@ -787,7 +787,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                 ),
                 other => Err(other.invalid_type(&visitor)),
             }
-            .map_err(|e| error::set_span(e, span, &path))
+            .map_err(|e| error::set_span(e, span, path))
         )
     }
 
@@ -832,7 +832,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                 Value::Null(..) => visitor.visit_map(&mut MapRefDeserializer::new_empty(self.path)),
                 other => Err(other.invalid_type(&visitor)),
             }
-            .map_err(|e| error::set_span(e, span, &path))
+            .map_err(|e| error::set_span(e, span, path))
         )
     }
 
@@ -870,7 +870,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                 Value::Null(..) => visitor.visit_map(&mut MapRefDeserializer::new_empty(self.path)),
                 other => Err(other.invalid_type(&visitor)),
             }
-            .map_err(|e| error::set_span(e, span, &path))
+            .map_err(|e| error::set_span(e, span, path))
         )
     }
 
@@ -916,11 +916,11 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                         return Err(error::set_span(
                             Error::invalid_type(other.unexpected(), &"a Value::Tagged enum"),
                             span,
-                            &path,
+                            path,
                         ));
                     }
                 })
-                .map_err(|e| error::set_span(e, span, &path))
+                .map_err(|e| error::set_span(e, span, path))
         )
     }
 
@@ -940,7 +940,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
         self.value.broadcast_end_mark();
         maybe_why_not!(
             self.value,
-            visitor.visit_unit().map_err(|e| error::set_span(e, span, &path))
+            visitor.visit_unit().map_err(|e| error::set_span(e, span, path))
         )
     }
 }
@@ -1223,7 +1223,7 @@ impl<'de> SeqAccess<'de> for SeqRefDeserializer<'de, '_, '_, '_> {
                 );
                 seed.deserialize(deserializer)
                     .map(Some)
-                    .map_err(|e| error::set_span(e, span, &self.path))
+                    .map_err(|e| error::set_span(e, span, self.path))
             }
             None => Ok(None),
         }
