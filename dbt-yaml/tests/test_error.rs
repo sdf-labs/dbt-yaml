@@ -70,7 +70,7 @@ fn test_incorrect_nested_type() {
           - !C
             d: fase
     "};
-    let expected = "invalid type: string \"fase\", expected a boolean at b[0].d at line 3 column 8";
+    let expected = "b[0].d: invalid type: string \"fase\", expected a boolean at line 3 column 8";
     test_error::<A>(yaml, expected);
 }
 
@@ -431,7 +431,7 @@ fn test_invalid_scalar_type() {
     }
 
     let yaml = "x: ''\n";
-    let expected = "invalid type: string \"\", expected an array of length 1 at x at line 1 column 4";
+    let expected = "x: invalid type: string \"\", expected an array of length 1 at line 1 column 4";
     test_error::<S>(yaml, expected);
 }
 
@@ -672,7 +672,7 @@ fn test_duplicate_keys() {
             key: true
             key: false
     "};
-    let expected = "duplicate entry with key \"key\" at .[1].map at line 4 column 5";
+    let expected = ".[1].map: duplicate entry with key \"key\" at line 4 column 5";
     test_error::<Value>(yaml, expected);
     test_ignore_duplicate_keys(
         yaml,
@@ -695,7 +695,7 @@ fn test_node_path_string_field() {
     struct MyStruct {
         field_name: String,
     }
-    let expected = "invalid type: map, expected a string at field_name at line 2 column 3";
+    let expected = "field_name: invalid type: map, expected a string at line 2 column 3";
     test_error::<MyStruct>("field_name:\n  nested: value", expected);
 }
 
@@ -706,7 +706,7 @@ fn test_node_path_u64_field() {
     struct MyStruct {
         count: u64,
     }
-    let expected = "invalid type: unit value, expected u64 at count at line 1 column 8";
+    let expected = "count: invalid type: unit value, expected u64 at line 1 column 8";
     test_error::<MyStruct>("count: ~", expected);
 }
 
@@ -717,6 +717,6 @@ fn test_node_path_bool_field() {
     struct MyStruct {
         enabled: bool,
     }
-    let expected = "invalid type: unit value, expected a boolean at enabled at line 1 column 10";
+    let expected = "enabled: invalid type: unit value, expected a boolean at line 1 column 10";
     test_error::<MyStruct>("enabled: ~", expected);
 }

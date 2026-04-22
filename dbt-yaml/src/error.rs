@@ -277,11 +277,10 @@ impl ErrorImpl {
         match self {
             ErrorImpl::Message(msg, None) => f.write_str(msg),
             ErrorImpl::Message(msg, Some(Pos { span: _, path })) => {
-                f.write_str(msg)?;
                 if path != "." {
-                    write!(f, " at {}", path)?;
+                    write!(f, "{}: ", path)?;
                 }
-                Ok(())
+                f.write_str(msg)
             }
             ErrorImpl::Libyaml(_) => unreachable!(),
             ErrorImpl::Io(err) => Display::fmt(err, f),
