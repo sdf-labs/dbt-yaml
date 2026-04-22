@@ -899,7 +899,9 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
         let path = self.path;
         self.value.broadcast_end_mark();
         drop(self);
-        visitor.visit_unit().map_err(|e| error::set_span(e, span, path))
+        visitor
+            .visit_unit()
+            .map_err(|e| error::set_span(e, span, path))
     }
 }
 
@@ -1603,4 +1605,3 @@ impl<'de, 'r, 'f> Deserializer<'de> for FlattenDeserializer<'_, 'r, 'f> {
         map enum identifier
     }
 }
-

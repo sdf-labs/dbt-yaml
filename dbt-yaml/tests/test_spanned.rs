@@ -366,7 +366,8 @@ fn test_transform_spanned() {
     #[cfg(feature = "filename")]
     {
         let spanned_point: Spanned<Point> = dbt_yaml::from_str(yaml).unwrap();
-        let transformed = spanned_point.map_span(|span| span.with_filename(std::path::PathBuf::from("newfile.yml")));
+        let transformed = spanned_point
+            .map_span(|span| span.with_filename(std::path::PathBuf::from("newfile.yml")));
         assert_eq!(*transformed, Point { x: 1.0, y: 2.0 });
         assert_eq!(
             transformed.span().filename.as_deref(),
