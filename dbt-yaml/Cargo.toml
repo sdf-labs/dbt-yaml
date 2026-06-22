@@ -25,6 +25,7 @@ dbt-yaml_schemars_derive = { workspace = true, optional = true }
 
 [features]
 filename = []
+yaml_11 = []
 flatten_dunder = ["dbt-yaml_schemars_derive?/flatten_dunder"]
 schemars = ["dep:schemars", "dep:dbt-yaml_schemars_derive"]
 

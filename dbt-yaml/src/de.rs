@@ -940,16 +940,41 @@ fn parse_bool(scalar: &str) -> Option<bool> {
     }
 }
 
+#[cfg(feature = "yaml_11")]
+macro_rules! maybe_yaml_11_integer_compat {
+    ($fn:expr) => {
+        |v: &str, radix: u32| {
+            // Yaml 1.1 compat: strip underscores before parsing integers. Note:
+            // stripping incurs an allocation, so we only do it if the string contains
+            // at least one underscore and not at the leading position:
+            if v.contains('_') && !v.starts_with('_') {
+                let stripped: String = v.chars().filter(|&c| c != '_').collect();
+                return $fn(&stripped, radix);
+            }
+
+            $fn(v, radix)
+        }
+    };
+}
+
+#[cfg(not(feature = "yaml_11"))]
+macro_rules! maybe_yaml_11_integer_compat {
+    ($fn:expr) => {
+        $fn
+    };
+}
+
 fn parse_unsigned_int<T>(
     scalar: &str,
     from_str_radix: fn(&str, radix: u32) -> Result<T, ParseIntError>,
 ) -> Option<T> {
+    let parse_int_radix = maybe_yaml_11_integer_compat!(from_str_radix);
     let unpositive = scalar.strip_prefix('+').unwrap_or(scalar);
     if let Some(rest) = unpositive.strip_prefix("0x") {
         if rest.starts_with(['+', '-']) {
             return None;
         }
-        if let Ok(int) = from_str_radix(rest, 16) {
+        if let Ok(int) = parse_int_radix(rest, 16) {
             return Some(int);
         }
     }
@@ -957,7 +982,7 @@ fn parse_unsigned_int<T>(
         if rest.starts_with(['+', '-']) {
             return None;
         }
-        if let Ok(int) = from_str_radix(rest, 8) {
+        if let Ok(int) = parse_int_radix(rest, 8) {
             return Some(int);
         }
     }
@@ -965,25 +990,26 @@ fn parse_unsigned_int<T>(
         if rest.starts_with(['+', '-']) {
             return None;
         }
-        if let Ok(int) = from_str_radix(rest, 2) {
+        if let Ok(int) = parse_int_radix(rest, 2) {
             return Some(int);
         }
     }
-    if unpositive.starts_with(['+', '-']) {
+    if unpositive.starts_with(['+', '-', '_']) {
         return None;
     }
     if digits_but_not_number(scalar) {
         return None;
     }
-    from_str_radix(unpositive, 10).ok()
+    parse_int_radix(unpositive, 10).ok()
 }
 
 fn parse_signed_int<T>(
     scalar: &str,
     from_str_radix: fn(&str, radix: u32) -> Result<T, ParseIntError>,
 ) -> Option<T> {
+    let parse_int_radix = maybe_yaml_11_integer_compat!(from_str_radix);
     let unpositive = if let Some(unpositive) = scalar.strip_prefix('+') {
-        if unpositive.starts_with(['+', '-']) {
+        if unpositive.starts_with(['+', '-', '_']) {
             return None;
         }
         unpositive
@@ -994,13 +1020,13 @@ fn parse_signed_int<T>(
         if rest.starts_with(['+', '-']) {
             return None;
         }
-        if let Ok(int) = from_str_radix(rest, 16) {
+        if let Ok(int) = parse_int_radix(rest, 16) {
             return Some(int);
         }
     }
     if let Some(rest) = scalar.strip_prefix("-0x") {
         let negative = format!("-{}", rest);
-        if let Ok(int) = from_str_radix(&negative, 16) {
+        if let Ok(int) = parse_int_radix(&negative, 16) {
             return Some(int);
         }
     }
@@ -1008,13 +1034,13 @@ fn parse_signed_int<T>(
         if rest.starts_with(['+', '-']) {
             return None;
         }
-        if let Ok(int) = from_str_radix(rest, 8) {
+        if let Ok(int) = parse_int_radix(rest, 8) {
             return Some(int);
         }
     }
     if let Some(rest) = scalar.strip_prefix("-0o") {
         let negative = format!("-{}", rest);
-        if let Ok(int) = from_str_radix(&negative, 8) {
+        if let Ok(int) = parse_int_radix(&negative, 8) {
             return Some(int);
         }
     }
@@ -1022,56 +1048,98 @@ fn parse_signed_int<T>(
         if rest.starts_with(['+', '-']) {
             return None;
         }
-        if let Ok(int) = from_str_radix(rest, 2) {
+        if let Ok(int) = parse_int_radix(rest, 2) {
             return Some(int);
         }
     }
     if let Some(rest) = scalar.strip_prefix("-0b") {
         let negative = format!("-{}", rest);
-        if let Ok(int) = from_str_radix(&negative, 2) {
+        if let Ok(int) = parse_int_radix(&negative, 2) {
             return Some(int);
+        }
+    }
+    if let Some(rest) = scalar.strip_prefix('-') {
+        if rest.starts_with(['+', '-', '_']) {
+            return None;
         }
     }
     if digits_but_not_number(scalar) {
         return None;
     }
-    from_str_radix(unpositive, 10).ok()
+    parse_int_radix(unpositive, 10).ok()
 }
 
 fn parse_negative_int<T>(
     scalar: &str,
     from_str_radix: fn(&str, radix: u32) -> Result<T, ParseIntError>,
 ) -> Option<T> {
+    let parse_int_radix = maybe_yaml_11_integer_compat!(from_str_radix);
+    if scalar.starts_with('+') {
+        return None;
+    }
     if let Some(rest) = scalar.strip_prefix("-0x") {
         let negative = format!("-{}", rest);
-        if let Ok(int) = from_str_radix(&negative, 16) {
+        if let Ok(int) = parse_int_radix(&negative, 16) {
             return Some(int);
         }
     }
     if let Some(rest) = scalar.strip_prefix("-0o") {
         let negative = format!("-{}", rest);
-        if let Ok(int) = from_str_radix(&negative, 8) {
+        if let Ok(int) = parse_int_radix(&negative, 8) {
             return Some(int);
         }
     }
     if let Some(rest) = scalar.strip_prefix("-0b") {
         let negative = format!("-{}", rest);
-        if let Ok(int) = from_str_radix(&negative, 2) {
+        if let Ok(int) = parse_int_radix(&negative, 2) {
             return Some(int);
+        }
+    }
+    if let Some(rest) = scalar.strip_prefix('-') {
+        if rest.starts_with(['+', '-', '_']) {
+            return None;
         }
     }
     if digits_but_not_number(scalar) {
         return None;
     }
-    from_str_radix(scalar, 10).ok()
+    parse_int_radix(scalar, 10).ok()
+}
+
+#[cfg(feature = "yaml_11")]
+macro_rules! maybe_yaml_11_f64_parse {
+    ($v:expr) => {{
+        let v = $v;
+        // Yaml 1.1 compat: strip underscores before parsing float. Note:
+        // stripping incurs an allocation, so we only do it if the string
+        // contains at least one underscore and not at the leading position:
+        if v.contains('_') && !v.starts_with('_') {
+            let stripped: String = v.chars().filter(|&c| c != '_').collect();
+            stripped.parse::<f64>()
+        } else {
+            v.parse::<f64>()
+        }
+    }};
+}
+
+#[cfg(not(feature = "yaml_11"))]
+macro_rules! maybe_yaml_11_f64_parse {
+    ($v:expr) => {
+        $v.parse::<f64>()
+    };
 }
 
 pub(crate) fn parse_f64(scalar: &str) -> Option<f64> {
     let unpositive = if let Some(unpositive) = scalar.strip_prefix('+') {
-        if unpositive.starts_with(['+', '-']) {
+        if unpositive.starts_with(['+', '-', '_']) {
             return None;
         }
         unpositive
+    } else if let Some(unpositive) = scalar.strip_prefix('-') {
+        if unpositive.starts_with(['+', '-', '_']) {
+            return None;
+        }
+        scalar
     } else {
         scalar
     };
@@ -1084,7 +1152,7 @@ pub(crate) fn parse_f64(scalar: &str) -> Option<f64> {
     if let ".nan" | ".NaN" | ".NAN" = scalar {
         return Some(f64::NAN.copysign(1.0));
     }
-    if let Ok(float) = unpositive.parse::<f64>() {
+    if let Ok(float) = maybe_yaml_11_f64_parse!(unpositive) {
         if float.is_finite() {
             return Some(float);
         }

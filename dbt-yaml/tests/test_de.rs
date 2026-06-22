@@ -86,6 +86,23 @@ fn test_alias() {
     test_de(yaml, &expected);
 }
 
+#[cfg(feature = "yaml_11")]
+#[test]
+fn test_number_underscores() {
+    let yaml = indoc! {"
+        - 1_000
+        - \"1_000\"
+        - 0xa_beef
+        - 0b1_0000
+    "};
+    let mut expected = Vec::new();
+    expected.push(Value::number(Number::from(1000)));
+    expected.push(Value::string("1_000".to_owned()));
+    expected.push(Value::number(Number::from(0xAbeef)));
+    expected.push(Value::number(Number::from(0b10000)));
+    test_de(yaml, &expected);
+}
+
 #[test]
 fn test_option() {
     #[derive(Deserialize, PartialEq, Debug)]
@@ -437,10 +454,48 @@ fn test_numbers() {
     }
 
     // NOT numbers.
-    let cases = [
+    #[allow(unused_mut)]
+    let mut cases = vec![
         "0127", "+0127", "-0127", "++.inf", "+-.inf", "++1", "+-1", "-+1", "--1", "0x+1", "0x-1",
         "-0x+1", "-0x-1", "++0x1", "+-0x1", "-+0x1", "--0x1",
     ];
+    #[cfg(not(feature = "yaml_11"))]
+    {
+        cases.extend(["1_1", "1_1.0"]);
+    }
+
+    for yaml in &cases {
+        let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
+        match value {
+            Value::String(string, ..) => assert_eq!(string, *yaml),
+            _ => panic!("expected string. input={:?}, result={:?}", yaml, value),
+        }
+    }
+}
+
+#[cfg(feature = "yaml_11")]
+#[test]
+fn test_yaml11_numbers() {
+    let cases = [
+        ("0x1_0000", "65536"),
+        ("0o1_0000", "4096"),
+        ("0b1_0000", "16"),
+        ("1__00_0", "1000"),
+        ("1_000.0", "1000.0"),
+        // Note: scientific notation is apparently not supported by the Python
+        // yaml parser: ("1_000e_-3", "1.0"),
+        ("-.1_000", "-0.1"),
+    ];
+    for &(yaml, expected) in &cases {
+        let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
+        match value {
+            Value::Number(number, ..) => assert_eq!(number.to_string(), expected),
+            _ => panic!("expected number. input={:?}, result={:?}", yaml, value),
+        }
+    }
+
+    // NOT numbers.
+    let cases = ["_1", "+_1", "-_1", "_0x1", "0_x1", "-_3", "._inf"];
     for yaml in &cases {
         let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
         match value {
