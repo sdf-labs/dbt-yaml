@@ -42,7 +42,8 @@ impl<'input> Loader<'input> {
     }
 
     pub fn next_document(&mut self) -> Option<Document<'input>> {
-        let document = self.next_document_inner()?;
+        let mut document = self.next_document_inner()?;
+        drop_self_referential_merge_aliases(&mut document);
         if let Some((_event, mark)) = document.events.first() {
             spanned::set_marker(*mark);
         }
@@ -159,5 +160,145 @@ impl<'input> Loader<'input> {
             };
             document.events.push((event, mark));
         }
+    }
+}
+
+/// Core-accepted YAML merges the enclosing sequence/mapping into one of its own
+/// elements via `<<: *anchor`, e.g.:
+///
+/// ```yaml
+/// tables: &t
+///   - name: a
+///   - <<: *t
+///     name: b
+/// ```
+///
+/// PyYAML terminates this by removing the `<<` key from a mapping *before*
+/// recursing into the merge source (`Constructor.flatten_mapping`), so a merge
+/// alias that points back at an in-progress ancestor never gets followed. Since
+/// the anchor and the alias are the same node, that single removal breaks the
+/// cycle for every occurrence, and the self-referencing branch never
+/// contributes any keys (whatever it would contribute is always overridden by
+/// its own explicit keys, applied after the merge). This crate has no such
+/// short-circuit: `apply_merge` only runs after the whole document has already
+/// been materialized into a tree, so a self-referential merge alias causes
+/// unbounded re-entry during materialization itself and trips the recursion
+/// guard in `de.rs`.
+///
+/// This rewrites the raw event stream, before deserialization, to drop any
+/// `<<`-key alias event whose target range contains the mapping doing the
+/// merge. That reproduces PyYAML's observable result (the cyclic branch
+/// contributes nothing) while leaving every other alias -- including
+/// non-merge cycles, which have no finite tree representation and must keep
+/// erroring -- untouched.
+fn drop_self_referential_merge_aliases(document: &mut Document<'_>) {
+    let n = document.events.len();
+    if n == 0 {
+        return;
+    }
+
+    // For every *Start event, the index of its matching *End event.
+    let mut end_of = vec![usize::MAX; n];
+    {
+        let mut stack: Vec<usize> = Vec::new();
+        for (i, (event, _)) in document.events.iter().enumerate() {
+            match event {
+                Event::SequenceStart(_) | Event::MappingStart(_) => stack.push(i),
+                Event::SequenceEnd | Event::MappingEnd => {
+                    if let Some(start) = stack.pop() {
+                        end_of[start] = i;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let skip_node = |events: &[(Event<'_>, Mark)], i: usize| -> usize {
+        match &events[i].0 {
+            Event::SequenceStart(_) | Event::MappingStart(_) => end_of[i] + 1,
+            _ => i + 1,
+        }
+    };
+    let is_within = |target: usize, start: usize, end: usize| target >= start && target <= end;
+
+    let mut to_delete: Vec<usize> = Vec::new();
+    {
+        let events = &document.events;
+        for (m, (event, _)) in events.iter().enumerate() {
+            if !matches!(event, Event::MappingStart(_)) {
+                continue;
+            }
+            let end = end_of[m];
+            if end == usize::MAX {
+                continue;
+            }
+            let mut i = m + 1;
+            while i < end {
+                let key_is_merge =
+                    matches!(&events[i].0, Event::Scalar(scalar) if scalar.value.as_ref() == b"<<");
+                let value_idx = skip_node(events, i);
+                if key_is_merge {
+                    match &events[value_idx].0 {
+                        Event::Alias(id) => {
+                            let target = document.aliases.get(id).copied();
+                            if target.is_some_and(|target| {
+                                is_within(value_idx, target, end_of[target])
+                            }) {
+                                // The whole merge value is self-referential:
+                                // drop both the `<<` key and its value, which
+                                // is equivalent to the key never having been
+                                // present.
+                                to_delete.push(i);
+                                to_delete.push(value_idx);
+                            }
+                        }
+                        Event::SequenceStart(_) => {
+                            // `<<: [*a, *b, ...]` -- drop only the
+                            // self-referential elements, keep the rest of the
+                            // merge list intact.
+                            let seq_end = end_of[value_idx];
+                            let mut j = value_idx + 1;
+                            while j < seq_end {
+                                if let Event::Alias(id) = &events[j].0 {
+                                    let target = document.aliases.get(id).copied();
+                                    if target.is_some_and(|target| {
+                                        is_within(j, target, end_of[target])
+                                    }) {
+                                        to_delete.push(j);
+                                    }
+                                }
+                                j = skip_node(events, j);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                i = skip_node(events, value_idx);
+            }
+        }
+    }
+
+    if to_delete.is_empty() {
+        return;
+    }
+    to_delete.sort_unstable();
+    to_delete.dedup();
+    let to_delete = to_delete;
+
+    let mut remap = vec![0usize; n];
+    let mut new_events = Vec::with_capacity(n - to_delete.len());
+    let mut delete_iter = to_delete.iter().copied().peekable();
+    for (i, entry) in document.events.drain(..).enumerate() {
+        if delete_iter.peek() == Some(&i) {
+            delete_iter.next();
+            continue;
+        }
+        remap[i] = new_events.len();
+        new_events.push(entry);
+    }
+    document.events = new_events;
+    for target in document.aliases.values_mut() {
+        *target = remap[*target];
     }
 }

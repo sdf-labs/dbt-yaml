@@ -367,6 +367,33 @@ fn test_merge() {
 }
 
 #[test]
+fn test_self_referential_merge_alias() {
+    // https://github.com/dbt-labs/fs/issues/14006
+    //
+    // `tables` anchors its own sequence, and one of that sequence's own
+    // elements merges the anchor back in. PyYAML (and dbt Core, which relies
+    // on it) accept this: the merge key is dropped before recursing into the
+    // merge source, so the cyclic branch never gets followed. This must
+    // deserialize without tripping the recursion guard, and must preserve
+    // both table declarations, matching dbt Core.
+    let yaml = indoc! {"
+        tables: &anchor_item
+          - name: anchor_item
+          - <<: *anchor_item
+            name: merged_item
+    "};
+
+    let mut value: Value = dbt_yaml::from_str(yaml).unwrap();
+    value.apply_merge().unwrap();
+    assert!(value.span().is_valid());
+
+    let tables = &value["tables"];
+    assert_eq!(tables.as_sequence().unwrap().len(), 2);
+    assert_eq!(tables[0]["name"], "anchor_item");
+    assert_eq!(tables[1]["name"], "merged_item");
+}
+
+#[test]
 fn test_debug() {
     let yaml = indoc! {"
         'Null': ~
