@@ -163,34 +163,15 @@ impl<'input> Loader<'input> {
     }
 }
 
-/// Core-accepted YAML merges the enclosing sequence/mapping into one of its own
-/// elements via `<<: *anchor`, e.g.:
-///
-/// ```yaml
-/// tables: &t
-///   - name: a
-///   - <<: *t
-///     name: b
-/// ```
-///
-/// PyYAML terminates this by removing the `<<` key from a mapping *before*
-/// recursing into the merge source (`Constructor.flatten_mapping`), so a merge
-/// alias that points back at an in-progress ancestor never gets followed. Since
-/// the anchor and the alias are the same node, that single removal breaks the
-/// cycle for every occurrence, and the self-referencing branch never
-/// contributes any keys (whatever it would contribute is always overridden by
-/// its own explicit keys, applied after the merge). This crate has no such
-/// short-circuit: `apply_merge` only runs after the whole document has already
-/// been materialized into a tree, so a self-referential merge alias causes
-/// unbounded re-entry during materialization itself and trips the recursion
-/// guard in `de.rs`.
-///
-/// This rewrites the raw event stream, before deserialization, to drop any
-/// `<<`-key alias event whose target range contains the mapping doing the
-/// merge. That reproduces PyYAML's observable result (the cyclic branch
-/// contributes nothing) while leaving every other alias -- including
-/// non-merge cycles, which have no finite tree representation and must keep
-/// erroring -- untouched.
+/// A sequence/mapping anchored and merged into one of its own elements (e.g.
+/// `tables: &t` with a `<<: *t` inside one of `t`'s elements) would recurse
+/// forever here, since `apply_merge` only runs after the document is fully
+/// materialized. PyYAML avoids this by dropping the `<<` key before recursing
+/// into the merge source, so the cyclic branch never gets followed and
+/// contributes no keys. This mirrors that: drop any `<<`-key alias event
+/// whose target range contains the mapping doing the merge, before
+/// deserialization even starts. Non-merge alias cycles have no finite tree
+/// representation and are left to error as before.
 fn drop_self_referential_merge_aliases(document: &mut Document<'_>) {
     let n = document.events.len();
     if n == 0 {
