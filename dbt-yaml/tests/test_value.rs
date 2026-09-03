@@ -392,6 +392,31 @@ fn test_self_referential_merge_alias() {
 }
 
 #[test]
+fn test_self_referential_merge_alias_in_list() {
+    // Covers the `<<: [*a, *b, ...]` branch, unlike
+    // `test_self_referential_merge_alias` above, which only exercises a
+    // single alias. Here the self-referential list element is dropped but
+    // the non-cyclic one (`*common`) is still merged in, matching PyYAML
+    // exactly (verified against real PyYAML, not just reasoned about).
+    let yaml = indoc! {"
+        common: &common
+          x: 1
+        items:
+          - &self_ref
+            <<: [*common, *self_ref]
+            y: 2
+    "};
+
+    let mut value: Value = dbt_yaml::from_str(yaml).unwrap();
+    value.apply_merge().unwrap();
+    assert!(value.span().is_valid());
+
+    let item = &value["items"][0];
+    assert_eq!(item["x"], 1);
+    assert_eq!(item["y"], 2);
+}
+
+#[test]
 fn test_debug() {
     let yaml = indoc! {"
         'Null': ~
