@@ -163,15 +163,13 @@ impl<'input> Loader<'input> {
     }
 }
 
-/// A sequence/mapping anchored and merged into one of its own elements (e.g.
-/// `tables: &t` with a `<<: *t` inside one of `t`'s elements) would recurse
-/// forever here, since `apply_merge` only runs after the document is fully
-/// materialized. PyYAML avoids this by dropping the `<<` key before recursing
-/// into the merge source, so the cyclic branch never gets followed and
-/// contributes no keys. This mirrors that: drop any `<<`-key alias event
-/// whose target range contains the mapping doing the merge, before
-/// deserialization even starts. Non-merge alias cycles have no finite tree
-/// representation and are left to error as before.
+/// Breaks self-referential `<<` merges (e.g. `tables: &t` merged into one of
+/// `t`'s own elements) before deserialization even starts, since
+/// `apply_merge` only runs after the document is fully materialized and would
+/// otherwise recurse forever. Mirrors PyYAML's `flatten_mapping`: drop any
+/// `<<`-key alias whose target range contains the mapping doing the merge.
+/// Non-merge alias cycles still error, since they have no finite
+/// representation.
 fn drop_self_referential_merge_aliases(document: &mut Document<'_>) {
     let n = document.events.len();
     if n == 0 {
