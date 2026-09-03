@@ -199,7 +199,12 @@ fn drop_self_referential_merge_aliases(document: &mut Document<'_>) {
             _ => i + 1,
         }
     };
-    let is_within = |target: usize, start: usize, end: usize| target >= start && target <= end;
+    // `end == usize::MAX` means the target isn't a container (e.g. a scalar
+    // anchor), which can never contain `target`; treat it as not-within
+    // rather than falsely matching every backward alias to it.
+    let is_within = |target: usize, start: usize, end: usize| {
+        end != usize::MAX && target >= start && target <= end
+    };
 
     let mut to_delete: Vec<usize> = Vec::new();
     {
@@ -224,13 +229,9 @@ fn drop_self_referential_merge_aliases(document: &mut Document<'_>) {
                             if target.is_some_and(|target| {
                                 is_within(value_idx, target, end_of[target])
                             }) {
-                                // The whole merge value is self-referential:
-                                // drop both the `<<` key and its value, which
-                                // is equivalent to the key never having been
-                                // present. Known gap: if the aliased sequence
-                                // also has non-cyclic elements, this drops
-                                // their contribution too instead of merging
-                                // just those in, unlike PyYAML.
+                                // Self-referential: drop the `<<` key/value
+                                // entirely. Known gap: also drops non-cyclic
+                                // siblings if the aliased sequence has any.
                                 to_delete.push(i);
                                 to_delete.push(value_idx);
                             }

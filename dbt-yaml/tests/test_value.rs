@@ -417,6 +417,28 @@ fn test_self_referential_merge_alias_in_list() {
 }
 
 #[test]
+fn test_merge_alias_to_scalar_is_not_self_referential() {
+    // A backward alias to a scalar can never be self-referential (a scalar
+    // has no range to contain anything), so the self-reference guard must
+    // not treat it as one. `<<: *s` is still a malformed merge -- it should
+    // reach `apply_merge`'s existing validation and error there, not be
+    // silently dropped during loading.
+    let yaml = indoc! {"
+        base: &s hello
+        item:
+          <<: *s
+          y: 2
+    "};
+
+    let mut value: Value = dbt_yaml::from_str(yaml).unwrap();
+    let error = value.apply_merge().unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "expected a mapping or list of mappings for merging, but found scalar"
+    );
+}
+
+#[test]
 fn test_debug() {
     let yaml = indoc! {"
         'Null': ~
