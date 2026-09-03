@@ -371,7 +371,9 @@ fn test_self_referential_merge_alias() {
     // https://github.com/dbt-labs/fs/issues/14006
     // `tables` merges its own anchor into one of its own elements. dbt Core
     // accepts this shape; it must not trip the recursion guard here, and
-    // both table declarations must survive.
+    // both table declarations must survive. This does not assert field
+    // inheritance from non-cyclic siblings -- see the known gap noted at the
+    // `Event::Alias` match arm in loader.rs.
     let yaml = indoc! {"
         tables: &anchor_item
           - name: anchor_item

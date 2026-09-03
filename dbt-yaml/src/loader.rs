@@ -227,7 +227,10 @@ fn drop_self_referential_merge_aliases(document: &mut Document<'_>) {
                                 // The whole merge value is self-referential:
                                 // drop both the `<<` key and its value, which
                                 // is equivalent to the key never having been
-                                // present.
+                                // present. Known gap: if the aliased sequence
+                                // also has non-cyclic elements, this drops
+                                // their contribution too instead of merging
+                                // just those in, unlike PyYAML.
                                 to_delete.push(i);
                                 to_delete.push(value_idx);
                             }
