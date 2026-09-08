@@ -17,6 +17,15 @@ pub(crate) struct Document<'input> {
     pub error: Option<Arc<ErrorImpl>>,
     /// Map from alias id to index in events.
     pub aliases: BTreeMap<usize, usize>,
+    /// Set while parsing if any alias was resolved while its own anchor's
+    /// container was still open, i.e. a genuine reference cycle exists
+    /// somewhere in the document (merge-related or not). Tracked with a
+    /// small open-container stack maintained alongside the existing parse
+    /// loop (no extra scan), so `drop_self_referential_merge_aliases` can
+    /// skip its scans for every document that has no cycle at all --
+    /// including the common, non-cyclic `<<: *defaults`-style merge, which
+    /// a merge-key-presence check alone wouldn't filter out.
+    has_open_alias_cycle: bool,
 }
 
 impl<'input> Loader<'input> {
@@ -61,10 +70,16 @@ impl<'input> Loader<'input> {
         self.document_count += 1;
 
         let mut anchors: BTreeMap<_, (usize, Mark)> = BTreeMap::new();
+        // Indices of currently-open Sequence/MappingStart events, i.e. the
+        // ancestor chain of whatever event is about to be parsed. An alias
+        // resolving to one of these is a live cycle: its target hasn't
+        // finished parsing yet.
+        let mut open_containers: Vec<usize> = Vec::new();
         let mut document = Document {
             events: Vec::new(),
             error: None,
             aliases: BTreeMap::new(),
+            has_open_alias_cycle: false,
         };
 
         loop {
@@ -94,7 +109,14 @@ impl<'input> Loader<'input> {
                     return Some(document);
                 }
                 YamlEvent::Alias(alias) => match anchors.get(&alias) {
-                    Some((id, _)) => Event::Alias(*id),
+                    Some((id, _)) => {
+                        if let Some(&target) = document.aliases.get(id) {
+                            if open_containers.contains(&target) {
+                                document.has_open_alias_cycle = true;
+                            }
+                        }
+                        Event::Alias(*id)
+                    }
                     None => {
                         document.error =
                             Some(error::new(ErrorImpl::UnknownAnchor(mark.into())).shared());
@@ -120,6 +142,7 @@ impl<'input> Loader<'input> {
                     Event::Scalar(scalar)
                 }
                 YamlEvent::SequenceStart(mut sequence_start) => {
+                    open_containers.push(document.events.len());
                     if let Some(anchor) = sequence_start.anchor.take() {
                         if let Some((_, first_mark)) = anchors.get(&anchor) {
                             document.error = Some(
@@ -137,8 +160,12 @@ impl<'input> Loader<'input> {
                     }
                     Event::SequenceStart(sequence_start)
                 }
-                YamlEvent::SequenceEnd => Event::SequenceEnd,
+                YamlEvent::SequenceEnd => {
+                    open_containers.pop();
+                    Event::SequenceEnd
+                }
                 YamlEvent::MappingStart(mut mapping_start) => {
+                    open_containers.push(document.events.len());
                     if let Some(anchor) = mapping_start.anchor.take() {
                         if let Some((_, first_mark)) = anchors.get(&anchor) {
                             document.error = Some(
@@ -156,7 +183,10 @@ impl<'input> Loader<'input> {
                     }
                     Event::MappingStart(mapping_start)
                 }
-                YamlEvent::MappingEnd => Event::MappingEnd,
+                YamlEvent::MappingEnd => {
+                    open_containers.pop();
+                    Event::MappingEnd
+                }
             };
             document.events.push((event, mark));
         }
@@ -170,11 +200,21 @@ impl<'input> Loader<'input> {
 /// `<<`-key alias whose target range contains the mapping doing the merge.
 /// Non-merge alias cycles still error, since they have no finite
 /// representation.
+///
+/// Bails out before doing any scanning unless the parse loop already
+/// flagged a live alias cycle (`has_open_alias_cycle`) -- a necessary
+/// condition for a self-referential merge to exist. This also rules out
+/// the common, non-cyclic merge (`<<: *defaults`, merging in an
+/// already-fully-parsed anchor), which a mere "document has a `<<`
+/// somewhere" check would not filter out. That confines the two-pass scan
+/// below to documents that actually contain a cycle -- a rare, already
+/// anomalous case -- while ordinary YAML, cyclic or not, never pays for
+/// more than the bookkeeping already folded into parsing.
 fn drop_self_referential_merge_aliases(document: &mut Document<'_>) {
-    let n = document.events.len();
-    if n == 0 {
+    if !document.has_open_alias_cycle {
         return;
     }
+    let n = document.events.len();
 
     // For every *Start event, the index of its matching *End event.
     let mut end_of = vec![usize::MAX; n];
