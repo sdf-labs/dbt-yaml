@@ -275,6 +275,41 @@ pub fn with_filename(filename: Option<std::path::PathBuf>) -> WithFilenameScope 
     WithFilenameScope { original }
 }
 
+#[cfg(feature = "yaml_11")]
+/// A scope guard that restores the previous YAML 1.1 timestamp resolution
+/// setting when dropped.
+pub struct WithTimestampResolutionScope {
+    original: bool,
+}
+
+#[cfg(feature = "yaml_11")]
+impl Drop for WithTimestampResolutionScope {
+    fn drop(&mut self) {
+        RESOLVE_TIMESTAMPS.with(|r| r.set(self.original));
+    }
+}
+
+#[cfg(feature = "yaml_11")]
+/// Enable or disable resolving plain (unquoted) YAML 1.1 timestamp-shaped
+/// scalars, such as `2026-08-26`, to a `Value::Tagged` value with tag
+/// `"timestamp"` instead of `Value::String`.
+///
+/// This is off by default: without opting in, a plain timestamp-shaped
+/// scalar deserializes identically to a quoted one, as `Value::String`.
+/// Quoted scalars are never affected, since quoting is meaningful in YAML
+/// and always indicates an explicit string.
+///
+/// Returns a scope guard that restores the original setting when dropped.
+pub fn with_timestamp_resolution(enabled: bool) -> WithTimestampResolutionScope {
+    let original = RESOLVE_TIMESTAMPS.with(|r| r.replace(enabled));
+    WithTimestampResolutionScope { original }
+}
+
+#[cfg(feature = "yaml_11")]
+pub(crate) fn resolve_timestamps() -> bool {
+    RESOLVE_TIMESTAMPS.with(|r| r.get())
+}
+
 /// Set the current source location marker.
 ///
 /// This is called by [Deserializer] implementations to inform the
@@ -323,6 +358,9 @@ thread_local! {
     static FILENAME: std::cell::RefCell<Option<std::sync::Arc<std::path::PathBuf>>> = const {
         std::cell::RefCell::new(None)
     };
+
+    #[cfg(feature = "yaml_11")]
+    static RESOLVE_TIMESTAMPS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 // Internal states for serialization.

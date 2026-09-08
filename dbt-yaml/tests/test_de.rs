@@ -506,6 +506,94 @@ fn test_yaml11_numbers() {
     }
 }
 
+#[cfg(feature = "yaml_11")]
+#[test]
+fn test_yaml11_timestamps_off_by_default() {
+    // Without opting in, plain timestamp-shaped scalars stay plain strings,
+    // identically to quoted ones.
+    let yaml = indoc! {"
+        - 2026-08-26
+        - \"2026-08-26\"
+        - 2026-08-26T12:30:00Z
+    "};
+    let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
+    let Value::Sequence(seq, ..) = value else {
+        panic!("expected sequence");
+    };
+    for item in &seq {
+        match item {
+            Value::String(..) => {}
+            other => panic!("expected string, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(feature = "yaml_11")]
+#[test]
+fn test_yaml11_timestamps_opt_in() {
+    let timestamp_cases = [
+        "2026-08-26",
+        "2026-8-6T00:00:00Z",
+        "2026-08-26T12:30:00Z",
+        "2026-08-26t12:30:00.123-05:00",
+        "2026-08-26 12:30:00",
+    ];
+    let non_timestamp_cases = [
+        "not-a-date",
+        "2026-08-26-extra",
+        "2026-8-6",
+        "2026-13",
+        "12:30:00",
+    ];
+
+    let _guard = dbt_yaml::with_timestamp_resolution(true);
+
+    for yaml in timestamp_cases {
+        let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
+        match value {
+            Value::Tagged(tagged, ..) => {
+                assert_eq!(tagged.tag, "timestamp");
+                assert_eq!(tagged.value, Value::string(yaml.to_owned()));
+            }
+            other => panic!("expected tagged timestamp for {yaml:?}, got {other:?}"),
+        }
+    }
+
+    for yaml in non_timestamp_cases {
+        let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
+        match value {
+            Value::String(string, ..) => assert_eq!(string, yaml),
+            other => panic!("expected plain string for {yaml:?}, got {other:?}"),
+        }
+    }
+
+    // Quoting always wins: an explicitly-quoted date-shaped scalar is never
+    // resolved to a timestamp, even with resolution enabled.
+    let value = dbt_yaml::from_str::<Value>("\"2026-08-26\"").unwrap();
+    match value {
+        Value::String(string, ..) => assert_eq!(string, "2026-08-26"),
+        other => panic!("expected plain string, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "yaml_11")]
+#[test]
+fn test_yaml11_timestamps_scope_restores() {
+    let yaml = "2026-08-26";
+    {
+        let _outer = dbt_yaml::with_timestamp_resolution(true);
+        {
+            let _inner = dbt_yaml::with_timestamp_resolution(false);
+            let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
+            assert!(matches!(value, Value::String(..)));
+        }
+        let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
+        assert!(matches!(value, Value::Tagged(..)));
+    }
+    let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
+    assert!(matches!(value, Value::String(..)));
+}
+
 #[test]
 fn test_nan() {
     // There is no negative NaN in YAML.

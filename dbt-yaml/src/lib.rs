@@ -172,6 +172,10 @@ pub use crate::spanned::{reset_marker, set_marker, Marker, Span, Spanned};
 #[doc(inline)]
 pub use crate::spanned::with_filename;
 
+#[cfg(feature = "yaml_11")]
+#[doc(inline)]
+pub use crate::spanned::with_timestamp_resolution;
+
 #[doc(inline)]
 pub use crate::shouldbe::{ShouldBe, WhyNot};
 #[doc(inline)]
