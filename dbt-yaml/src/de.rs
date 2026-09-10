@@ -1549,6 +1549,8 @@ impl<'de> de::Deserializer<'de> for &mut DeserializerFromEvents<'de, '_> {
         let (next, mark) = self.next_event_mark()?;
         match next {
             Event::Scalar(scalar) => {
+                #[cfg(feature = "yaml_11")]
+                spanned::set_scalar_plain(scalar.style == ScalarStyle::Plain);
                 if let Ok(v) = str::from_utf8(&scalar.value) {
                     if let Some(borrowed) = parse_borrowed_str(v, scalar.repr, scalar.style) {
                         visitor.visit_borrowed_str(borrowed)

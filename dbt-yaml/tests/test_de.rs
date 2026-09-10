@@ -576,6 +576,29 @@ fn test_yaml11_scalar_style_span() {
     assert_eq!(a.cmp(&b), std::cmp::Ordering::Equal);
 }
 
+#[cfg(feature = "yaml_11")]
+#[test]
+fn test_yaml11_scalar_style_span_via_spanned() {
+    use dbt_yaml::Spanned;
+
+    let plain: Spanned<String> = dbt_yaml::from_str("2026-08-26").unwrap();
+    let quoted: Spanned<String> = dbt_yaml::from_str("\"2026-08-26\"").unwrap();
+
+    assert!(plain.span().was_plain());
+    assert!(!quoted.span().was_plain());
+
+    #[derive(Deserialize)]
+    struct Vars {
+        execution_date: Spanned<String>,
+    }
+
+    let vars: Vars = dbt_yaml::from_str("execution_date: 2026-08-26\n").unwrap();
+    assert!(vars.execution_date.span().was_plain());
+
+    let vars: Vars = dbt_yaml::from_str("execution_date: \"2026-08-26\"\n").unwrap();
+    assert!(!vars.execution_date.span().was_plain());
+}
+
 #[test]
 fn test_nan() {
     // There is no negative NaN in YAML.
