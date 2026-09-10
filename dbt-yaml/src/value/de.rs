@@ -245,7 +245,6 @@ impl<'de> DeserializeSeed<'de> for ValueVisitor<'_, '_> {
 }
 
 #[cfg(feature = "yaml_11")]
-/// Attach the plain-scalar flag to `span` if `val` is a string.
 fn attach_scalar_plain(span: Span, val: &Value) -> Span {
     let plain = spanned::take_scalar_plain();
     if matches!(val, Value::String(..)) {
