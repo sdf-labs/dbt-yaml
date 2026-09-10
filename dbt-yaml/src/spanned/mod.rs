@@ -214,9 +214,6 @@ where
         #[cfg(feature = "filename")]
         let span = span.maybe_capture_filename();
 
-        // Meaningful only when T is the plain/quoted scalar itself; for
-        // composite T this reflects whichever nested scalar deserialized
-        // last, which callers should not rely on.
         #[cfg(feature = "yaml_11")]
         let span = span.with_was_plain(take_scalar_plain());
 
