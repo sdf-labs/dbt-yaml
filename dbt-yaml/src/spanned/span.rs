@@ -21,19 +21,7 @@ pub struct Span {
     pub filename: Option<Arc<PathBuf>>,
 
     #[cfg(feature = "yaml_11")]
-    /// True if the scalar this span refers to was written in YAML's plain
-    /// (unquoted) style, as opposed to being explicitly quoted.
-    ///
-    /// Always `false` for spans that don't correspond to a single scalar
-    /// (sequences, mappings, tagged values) and for values constructed
-    /// without going through the deserializer (e.g. `Value::string`).
-    ///
-    /// This distinguishes a bare `2026-08-26` from `"2026-08-26"`: only the
-    /// former could be construed as a YAML 1.1 timestamp rather than a
-    /// string. dbt-yaml itself always resolves both to `Value::String` (see
-    /// [crate::Value]); this flag is the only place that distinction
-    /// survives, for callers that need to make their own type inference
-    /// decision based on it.
+    /// Whether the scalar was written in YAML's plain (unquoted) style.
     pub was_plain: bool,
 }
 
@@ -70,28 +58,21 @@ impl Span {
             was_plain: false,
         }
     }
-}
 
-#[cfg(feature = "yaml_11")]
-impl Span {
-    /// Get whether the scalar this span refers to was written in YAML's
-    /// plain (unquoted) style. See the field docs on [`Span::was_plain`].
+    #[cfg(feature = "yaml_11")]
+    /// Whether the scalar was written in YAML's plain (unquoted) style.
     pub fn was_plain(&self) -> bool {
         self.was_plain
     }
 
+    #[cfg(feature = "yaml_11")]
     /// Replace the `was_plain` flag on this span.
     pub(crate) fn with_was_plain(self, was_plain: bool) -> Self {
         Span { was_plain, ..self }
     }
 }
 
-// `was_plain` is metadata about how a scalar was spelled, not part of a
-// span's identity, so it's deliberately left out of comparisons below:
-// two spans covering the same source range are equal (and order the same)
-// regardless of it. These impls are otherwise equivalent to what
-// `#[derive(PartialEq, Eq, PartialOrd, Ord)]` would produce over `start`,
-// `end`, and (with the `filename` feature) `filename`.
+// `was_plain` is excluded from equality/ordering: it's metadata, not identity.
 impl PartialEq for Span {
     fn eq(&self, other: &Self) -> bool {
         let eq = self.start == other.start && self.end == other.end;

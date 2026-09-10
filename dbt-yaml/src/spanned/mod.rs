@@ -314,18 +314,13 @@ pub(crate) fn get_filename() -> Option<std::sync::Arc<std::path::PathBuf>> {
 }
 
 #[cfg(feature = "yaml_11")]
-/// Record whether the scalar event just visited by the deserializer was
-/// written in YAML's plain (unquoted) style.
-///
-/// This is set by [crate::de] for every scalar it visits, and consumed by
-/// [crate::Value]'s deserializer immediately after building each node, so it
-/// only ever reflects the single scalar (if any) that produced that node.
+/// Record whether the current scalar is plain (unquoted).
 pub(crate) fn set_scalar_plain(plain: bool) {
     SCALAR_PLAIN.with(|p| p.set(plain));
 }
 
 #[cfg(feature = "yaml_11")]
-/// Take the current plain-scalar flag, resetting it to `false`.
+/// Take and reset the current plain-scalar flag.
 pub(crate) fn take_scalar_plain() -> bool {
     SCALAR_PLAIN.with(|p| p.replace(false))
 }
