@@ -313,6 +313,23 @@ pub(crate) fn get_filename() -> Option<std::sync::Arc<std::path::PathBuf>> {
     FILENAME.with(|f| f.borrow().clone())
 }
 
+#[cfg(feature = "yaml_11")]
+/// Record whether the scalar event just visited by the deserializer was
+/// written in YAML's plain (unquoted) style.
+///
+/// This is set by [crate::de] for every scalar it visits, and consumed by
+/// [crate::Value]'s deserializer immediately after building each node, so it
+/// only ever reflects the single scalar (if any) that produced that node.
+pub(crate) fn set_scalar_plain(plain: bool) {
+    SCALAR_PLAIN.with(|p| p.set(plain));
+}
+
+#[cfg(feature = "yaml_11")]
+/// Take the current plain-scalar flag, resetting it to `false`.
+pub(crate) fn take_scalar_plain() -> bool {
+    SCALAR_PLAIN.with(|p| p.replace(false))
+}
+
 // Internal states for deserialization.
 thread_local! {
     static MARKER: std::cell::RefCell<Option<Marker>> = const {
@@ -323,6 +340,9 @@ thread_local! {
     static FILENAME: std::cell::RefCell<Option<std::sync::Arc<std::path::PathBuf>>> = const {
         std::cell::RefCell::new(None)
     };
+
+    #[cfg(feature = "yaml_11")]
+    static SCALAR_PLAIN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 // Internal states for serialization.

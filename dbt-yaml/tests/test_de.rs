@@ -506,6 +506,85 @@ fn test_yaml11_numbers() {
     }
 }
 
+/// A plain (unquoted) date-shaped scalar and an explicitly-quoted one both
+/// deserialize identically to `Value::String` -- dbt-yaml itself never infers
+/// a date type from scalar text, matching Core's YAML 1.2 handling. The only
+/// place the quoting distinction survives is `Span::was_plain`, which lets a
+/// caller with its own YAML 1.1 date semantics (like Fusion) make that call
+/// without dbt-yaml changing the value's type or leaking a tag.
+#[cfg(feature = "yaml_11")]
+#[test]
+fn test_yaml11_scalar_style_span() {
+    let plain = dbt_yaml::from_str::<Value>("2026-08-26").unwrap();
+    let quoted = dbt_yaml::from_str::<Value>("\"2026-08-26\"").unwrap();
+
+    assert_eq!(plain, quoted);
+    assert!(!dbt_yaml::to_string(&plain).unwrap().contains('!'));
+    assert!(!dbt_yaml::to_string(&quoted).unwrap().contains('!'));
+
+    match &plain {
+        Value::String(s, span) => {
+            assert_eq!(s, "2026-08-26");
+            assert!(span.was_plain());
+        }
+        other => panic!("expected string, got {other:?}"),
+    }
+    match &quoted {
+        Value::String(s, span) => {
+            assert_eq!(s, "2026-08-26");
+            assert!(!span.was_plain());
+        }
+        other => panic!("expected string, got {other:?}"),
+    }
+
+    // Same distinction nested in a mapping, matching the shape of a
+    // JSON-ish CLI `--vars` payload.
+    let map = dbt_yaml::from_str::<Value>(r#"{"execution_date": "2026-08-26"}"#).unwrap();
+    match map.get("execution_date").unwrap() {
+        Value::String(s, span) => {
+            assert_eq!(s, "2026-08-26");
+            assert!(
+                !span.was_plain(),
+                "JSON-quoted value must not read as plain"
+            );
+        }
+        other => panic!("expected string, got {other:?}"),
+    }
+
+    let map = dbt_yaml::from_str::<Value>("execution_date: 2026-08-26\n").unwrap();
+    match map.get("execution_date").unwrap() {
+        Value::String(s, span) => {
+            assert_eq!(s, "2026-08-26");
+            assert!(span.was_plain());
+        }
+        other => panic!("expected string, got {other:?}"),
+    }
+
+    // was_plain is only ever set for strings; it stays false for other
+    // scalar and container kinds regardless of their YAML style.
+    let non_strings = ["true", "42", "[1, 2]", "{a: 1}"];
+    for yaml in non_strings {
+        let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
+        assert!(
+            !value.span().was_plain(),
+            "expected was_plain=false for {yaml:?}, got {:?}",
+            value
+        );
+    }
+
+    // was_plain is metadata, not identity: spans that cover the same source
+    // range but differ in was_plain are still equal and order the same.
+    use dbt_yaml::{Marker, Span};
+    let a = Span::new(Marker::new(0, 1, 1), Marker::new(1, 1, 2));
+    let b = Span {
+        was_plain: true,
+        ..a.clone()
+    };
+    assert_ne!(a.was_plain(), b.was_plain());
+    assert_eq!(a, b);
+    assert_eq!(a.cmp(&b), std::cmp::Ordering::Equal);
+}
+
 #[test]
 fn test_nan() {
     // There is no negative NaN in YAML.

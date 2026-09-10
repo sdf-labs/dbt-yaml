@@ -237,7 +237,28 @@ impl<'de> DeserializeSeed<'de> for ValueVisitor<'_, '_> {
         #[cfg(feature = "filename")]
         let span = span.maybe_capture_filename();
 
+        #[cfg(feature = "yaml_11")]
+        let span = attach_scalar_plain(span, &val);
+
         Ok(val.with_span(span))
+    }
+}
+
+#[cfg(feature = "yaml_11")]
+/// Attach the plain-scalar flag recorded by the deserializer (see
+/// [spanned::set_scalar_plain]) to `span`, if `val` is a string.
+///
+/// This always consumes the recorded flag, even when `val` isn't a string,
+/// so it never leaks into a later, unrelated node: a `Value::String` is only
+/// ever produced from a single scalar event, so the flag set while
+/// processing that event is the one still pending immediately after
+/// `deserialize_any` returns.
+fn attach_scalar_plain(span: Span, val: &Value) -> Span {
+    let plain = spanned::take_scalar_plain();
+    if matches!(val, Value::String(..)) {
+        span.with_was_plain(plain)
+    } else {
+        span
     }
 }
 
@@ -299,6 +320,9 @@ where
 
     #[cfg(feature = "filename")]
     let span = span.maybe_capture_filename();
+
+    #[cfg(feature = "yaml_11")]
+    let span = attach_scalar_plain(span, &val);
 
     Ok(val.with_span(span))
 }

@@ -871,6 +871,8 @@ where
             ))
         }
     };
+    #[cfg(feature = "yaml_11")]
+    spanned::set_scalar_plain(scalar.style == ScalarStyle::Plain);
     if let (Some(tag), false) = (&scalar.tag, tagged_already) {
         if tag == Tag::BOOL {
             return match parse_bool(v) {

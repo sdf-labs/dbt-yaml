@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::libyaml::error::Mark;
 
 /// A source span.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone)]
 pub struct Span {
     /// The start of the span.
     pub start: Marker,
@@ -19,6 +19,22 @@ pub struct Span {
     #[cfg(feature = "filename")]
     /// An optional filename.
     pub filename: Option<Arc<PathBuf>>,
+
+    #[cfg(feature = "yaml_11")]
+    /// True if the scalar this span refers to was written in YAML's plain
+    /// (unquoted) style, as opposed to being explicitly quoted.
+    ///
+    /// Always `false` for spans that don't correspond to a single scalar
+    /// (sequences, mappings, tagged values) and for values constructed
+    /// without going through the deserializer (e.g. `Value::string`).
+    ///
+    /// This distinguishes a bare `2026-08-26` from `"2026-08-26"`: only the
+    /// former could be construed as a YAML 1.1 timestamp rather than a
+    /// string. dbt-yaml itself always resolves both to `Value::String` (see
+    /// [crate::Value]); this flag is the only place that distinction
+    /// survives, for callers that need to make their own type inference
+    /// decision based on it.
+    pub was_plain: bool,
 }
 
 impl Span {
@@ -29,6 +45,8 @@ impl Span {
             end,
             #[cfg(feature = "filename")]
             filename: None,
+            #[cfg(feature = "yaml_11")]
+            was_plain: false,
         }
     }
 
@@ -48,7 +66,58 @@ impl Span {
             end: Marker::zero(),
             #[cfg(feature = "filename")]
             filename: None,
+            #[cfg(feature = "yaml_11")]
+            was_plain: false,
         }
+    }
+}
+
+#[cfg(feature = "yaml_11")]
+impl Span {
+    /// Get whether the scalar this span refers to was written in YAML's
+    /// plain (unquoted) style. See the field docs on [`Span::was_plain`].
+    pub fn was_plain(&self) -> bool {
+        self.was_plain
+    }
+
+    /// Replace the `was_plain` flag on this span.
+    pub(crate) fn with_was_plain(self, was_plain: bool) -> Self {
+        Span { was_plain, ..self }
+    }
+}
+
+// `was_plain` is metadata about how a scalar was spelled, not part of a
+// span's identity, so it's deliberately left out of comparisons below:
+// two spans covering the same source range are equal (and order the same)
+// regardless of it. These impls are otherwise equivalent to what
+// `#[derive(PartialEq, Eq, PartialOrd, Ord)]` would produce over `start`,
+// `end`, and (with the `filename` feature) `filename`.
+impl PartialEq for Span {
+    fn eq(&self, other: &Self) -> bool {
+        let eq = self.start == other.start && self.end == other.end;
+        #[cfg(feature = "filename")]
+        let eq = eq && self.filename == other.filename;
+        eq
+    }
+}
+
+impl Eq for Span {}
+
+impl PartialOrd for Span {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Span {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let ord = self
+            .start
+            .cmp(&other.start)
+            .then_with(|| self.end.cmp(&other.end));
+        #[cfg(feature = "filename")]
+        let ord = ord.then_with(|| self.filename.cmp(&other.filename));
+        ord
     }
 }
 
@@ -64,6 +133,8 @@ impl Span {
             start: start.into(),
             end: end.into(),
             filename: Some(filename.into()),
+            #[cfg(feature = "yaml_11")]
+            was_plain: false,
         }
     }
 
