@@ -364,6 +364,8 @@ impl Value {
             Value::Bool(b, ..) => Unexpected::Bool(*b),
             Value::Number(n, ..) => number::unexpected(n),
             Value::String(s, ..) => Unexpected::Str(s),
+            #[cfg(feature = "yaml_11")]
+            Value::Timestamp(..) => Unexpected::Other("timestamp"),
             Value::Sequence(..) => Unexpected::Seq,
             Value::Mapping(..) => Unexpected::Map,
             Value::Tagged(..) => Unexpected::Enum,

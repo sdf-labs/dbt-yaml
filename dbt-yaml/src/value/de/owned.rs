@@ -455,6 +455,8 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
             Value::Bool(v, ..) => visitor.visit_bool(v),
             Value::Number(n, ..) => n.deserialize_any(visitor),
             Value::String(v, ..) => visitor.visit_string(v),
+            #[cfg(feature = "yaml_11")]
+            Value::Timestamp(t, ..) => visitor.visit_string(t.to_string()),
             Value::Sequence(v, ..) => visit_sequence(
                 v,
                 self.path,
@@ -623,6 +625,8 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
         self.value.broadcast_end_mark();
         match self.value.untag() {
             Value::String(v, ..) => visitor.visit_string(v),
+            #[cfg(feature = "yaml_11")]
+            Value::Timestamp(t, ..) => visitor.visit_string(t.to_string()),
             other => Err(other.invalid_type(&visitor)),
         }
         .map_err(|e| error::set_span(e, span, self.path))

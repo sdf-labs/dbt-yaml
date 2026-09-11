@@ -176,6 +176,9 @@ pub use crate::spanned::with_filename;
 pub use crate::shouldbe::{ShouldBe, WhyNot};
 #[doc(inline)]
 pub use crate::value::{from_value, to_value, Index, Number, Sequence, Value};
+#[cfg(feature = "yaml_11")]
+#[doc(inline)]
+pub use crate::timestamp::{TimeOfDay, Timestamp};
 #[cfg(feature = "schemars")]
 pub use crate::verbatim::maybe_transformable;
 #[doc(inline)]
@@ -197,6 +200,8 @@ pub mod path;
 mod ser;
 mod shouldbe;
 pub mod spanned;
+#[cfg(feature = "yaml_11")]
+mod timestamp;
 pub mod value;
 mod verbatim;
 pub mod with;

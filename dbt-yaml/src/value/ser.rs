@@ -20,6 +20,10 @@ impl Serialize for Value {
             Value::Bool(b, ..) => serializer.serialize_bool(*b),
             Value::Number(n, ..) => n.serialize(serializer),
             Value::String(s, ..) => serializer.serialize_str(s),
+            // Serde's data model has no timestamp type; deliver as a string
+            // (this is also what chrono's Deserialize impls expect).
+            #[cfg(feature = "yaml_11")]
+            Value::Timestamp(t, ..) => serializer.serialize_str(&t.to_string()),
             Value::Sequence(seq, ..) => seq.serialize(serializer),
             Value::Mapping(mapping, ..) => {
                 use serde::ser::SerializeMap;

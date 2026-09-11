@@ -170,6 +170,8 @@ impl fmt::Display for Type<'_> {
             Value::Bool(..) => formatter.write_str("boolean"),
             Value::Number(..) => formatter.write_str("number"),
             Value::String(..) => formatter.write_str("string"),
+            #[cfg(feature = "yaml_11")]
+            Value::Timestamp(..) => formatter.write_str("timestamp"),
             Value::Sequence(..) => formatter.write_str("sequence"),
             Value::Mapping(..) => formatter.write_str("mapping"),
             Value::Tagged(..) => unreachable!(),

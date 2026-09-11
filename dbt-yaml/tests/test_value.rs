@@ -1163,3 +1163,84 @@ fn test_untagged_enum_flatten_dunder() {
     assert_eq!(list[2], Untagged::Number(101, 102));
     assert_eq!(list[3], Untagged::String("hello".to_string()));
 }
+
+#[cfg(feature = "yaml_11")]
+mod timestamp {
+    use dbt_yaml::{TimeOfDay, Timestamp, Value};
+    use std::cmp::Ordering;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn ts(
+        year: i32,
+        month: u8,
+        day: u8,
+        time: Option<TimeOfDay>,
+        tz_minutes: Option<i32>,
+    ) -> Value {
+        Value::timestamp(Timestamp::new(year, month, day, time, tz_minutes))
+    }
+
+    #[test]
+    fn value_eq_and_ord() {
+        let date = ts(2001, 12, 15, None, None);
+        let midnight = ts(2001, 12, 15, Some(TimeOfDay::new(0, 0, 0, 0)), Some(0));
+        assert_eq!(date, midnight);
+        assert_eq!(date.partial_cmp(&midnight), Some(Ordering::Equal));
+        assert!(date < ts(2001, 12, 16, None, None));
+
+        // A timestamp is not equal to (nor ordered against) its string
+        // representation.
+        let string = Value::string("2001-12-15".into());
+        assert_ne!(date, string);
+        assert_eq!(date.partial_cmp(&string), None);
+    }
+
+    #[test]
+    fn value_hash_is_consistent_with_eq() {
+        fn hash(value: &Value) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            value.hash(&mut hasher);
+            hasher.finish()
+        }
+        let a = ts(2001, 12, 15, Some(TimeOfDay::new(2, 0, 0, 0)), Some(2 * 60));
+        let b = ts(2001, 12, 15, Some(TimeOfDay::new(0, 0, 0, 0)), None);
+        assert_eq!(a, b);
+        assert_eq!(hash(&a), hash(&b));
+    }
+
+    #[test]
+    fn value_accessors() {
+        let v = ts(2001, 12, 15, None, None);
+        assert!(v.is_timestamp());
+        assert_eq!(v.as_timestamp().unwrap().date(), (2001, 12, 15));
+        assert!(!v.is_string());
+        assert_eq!(v.as_str(), None);
+    }
+
+    #[test]
+    fn value_debug() {
+        let v = ts(2001, 12, 15, None, None);
+        assert!(format!("{:?}", v).starts_with("Timestamp(2001-12-15) @"));
+    }
+
+    #[test]
+    fn timestamp_as_mapping_key() {
+        let mut mapping = dbt_yaml::Mapping::new();
+        let key = ts(2001, 12, 15, Some(TimeOfDay::new(2, 0, 0, 0)), Some(2 * 60));
+        mapping.insert(key, Value::bool(true));
+        // A different spelling of the same instant is the same key.
+        let same_instant = ts(2001, 12, 15, Some(TimeOfDay::new(0, 0, 0, 0)), None);
+        assert_eq!(mapping.get(&same_instant), Some(&Value::bool(true)));
+    }
+
+    #[test]
+    fn serde_boundary_delivers_string() {
+        let v = ts(2001, 12, 15, Some(TimeOfDay::new(2, 59, 43, 0)), None);
+        let s: String = dbt_yaml::from_value(v.clone()).unwrap();
+        assert_eq!(s, "2001-12-15 02:59:43");
+
+        let yaml = dbt_yaml::to_string(&v).unwrap();
+        assert_eq!(yaml, "2001-12-15 02:59:43\n");
+    }
+}

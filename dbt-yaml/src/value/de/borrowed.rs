@@ -453,6 +453,8 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                 Value::Bool(v, ..) => visitor.visit_bool(*v),
                 Value::Number(n, ..) => n.deserialize_any(visitor),
                 Value::String(v, ..) => visitor.visit_borrowed_str(v),
+                #[cfg(feature = "yaml_11")]
+                Value::Timestamp(t, ..) => visitor.visit_string(t.to_string()),
                 Value::Sequence(v, ..) => visit_sequence_ref(
                     v,
                     self.path,
@@ -620,6 +622,8 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
             self.value,
             match self.value.untag_ref() {
                 Value::String(v, ..) => visitor.visit_borrowed_str(v),
+                #[cfg(feature = "yaml_11")]
+                Value::Timestamp(t, ..) => visitor.visit_string(t.to_string()),
                 other => Err(other.invalid_type(&visitor)),
             }
             .map_err(|e| error::set_span(e, span, path))
