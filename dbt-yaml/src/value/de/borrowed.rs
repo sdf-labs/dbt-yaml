@@ -454,7 +454,9 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                 Value::Number(n, ..) => n.deserialize_any(visitor),
                 Value::String(v, ..) => visitor.visit_borrowed_str(v),
                 #[cfg(feature = "yaml_11")]
-                Value::Timestamp(t, ..) => visitor.visit_string(t.to_string()),
+                Value::Timestamp(t, ..) => {
+                    visitor.visit_map(crate::timestamp::TimestampFields::new(*t))
+                }
                 Value::Sequence(v, ..) => visit_sequence_ref(
                     v,
                     self.path,

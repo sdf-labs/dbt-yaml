@@ -9,9 +9,9 @@ mod ser;
 pub(crate) mod tagged;
 
 use crate::error::{self, Error, ErrorImpl};
-use crate::{spanned, Span};
 #[cfg(feature = "yaml_11")]
 use crate::Timestamp;
+use crate::{spanned, Span};
 use serde::de::{Deserialize, DeserializeOwned, IntoDeserializer};
 use serde::Serialize;
 use std::hash::{Hash, Hasher};

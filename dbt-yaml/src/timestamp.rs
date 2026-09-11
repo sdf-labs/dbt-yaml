@@ -1,6 +1,23 @@
+use crate::value::tagged::TagStringVisitor;
+use serde::de::value::{I32Deserializer, SeqDeserializer, StrDeserializer, U8Deserializer};
+use serde::de::{
+    self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, Unexpected, VariantAccess, Visitor,
+};
+use serde::ser;
 use std::cmp::Ordering;
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
+
+/// The enum variant name used to transport a resolved timestamp through the
+/// serde data model, which has no timestamp type. The deserializer presents
+/// the timestamp as an enum with this token as the variant name and the
+/// components as the variant's struct fields; `ValueVisitor` recognizes the
+/// token and produces a `Value::Timestamp`. This mirrors the pattern
+/// serde_json uses for arbitrary-precision numbers.
+pub(crate) const TOKEN: &str = "$dbt_yaml::private::Timestamp";
+
+/// The struct field names of a timestamp's component form, in order.
+pub(crate) const FIELDS: &[&str] = &["year", "month", "day", "time", "tz_minutes"];
 
 /// Represents a YAML 1.1 timestamp.
 ///
@@ -92,6 +109,108 @@ impl Timestamp {
         }
     }
 
+    /// Parses a YAML 1.1 timestamp scalar, following the grammar in
+    /// <https://yaml.org/type/timestamp.html>. Returns `None` if the scalar
+    /// does not match the grammar, or if the date or time-of-day is out of
+    /// range on the calendar: unlike [`Timestamp::new`], parsing validates
+    /// ranges, since only real dates denote an instant. The zone offset is
+    /// only checked against the grammar, not for plausibility.
+    ///
+    /// The fractional second is truncated to microsecond precision, matching
+    /// the canonical [`Display`] form.
+    pub fn parse(input: &str) -> Option<Timestamp> {
+        let bytes = input.as_bytes();
+        let mut pos = 0;
+
+        let year = parse_digits(bytes, &mut pos, 4, 4)? as i32;
+        parse_byte(bytes, &mut pos, b'-')?;
+        let month_start = pos;
+        let month = parse_digits(bytes, &mut pos, 1, 2)?;
+        let month_width = pos - month_start;
+        parse_byte(bytes, &mut pos, b'-')?;
+        let day_start = pos;
+        let day = parse_digits(bytes, &mut pos, 1, 2)?;
+        let day_width = pos - day_start;
+
+        if pos == bytes.len() {
+            // The date-only form requires two-digit month and day.
+            if month_width == 2 && day_width == 2 && valid_date(year, month, day) {
+                return Some(Timestamp::new(year, month as u8, day as u8, None, None));
+            }
+            return None;
+        }
+
+        // The date and time are separated by 'T', 't', or whitespace.
+        match bytes[pos] {
+            b'T' | b't' => pos += 1,
+            b' ' | b'\t' => skip_whitespace(bytes, &mut pos),
+            _ => return None,
+        }
+
+        let hour = parse_digits(bytes, &mut pos, 1, 2)?;
+        parse_byte(bytes, &mut pos, b':')?;
+        let minute = parse_digits(bytes, &mut pos, 2, 2)?;
+        parse_byte(bytes, &mut pos, b':')?;
+        let second = parse_digits(bytes, &mut pos, 2, 2)?;
+
+        let mut nanos = 0;
+        if bytes.get(pos) == Some(&b'.') {
+            pos += 1;
+            let mut digits = 0;
+            while let Some(digit) = bytes.get(pos).filter(|b| b.is_ascii_digit()) {
+                if digits < 6 {
+                    nanos = nanos * 10 + u32::from(*digit - b'0');
+                    digits += 1;
+                }
+                pos += 1;
+            }
+            nanos *= 10u32.pow(6 - digits) * 1000;
+        }
+
+        skip_whitespace(bytes, &mut pos);
+        let tz_minutes = if pos == bytes.len() {
+            None
+        } else {
+            match bytes[pos] {
+                b'Z' => {
+                    pos += 1;
+                    Some(0)
+                }
+                sign @ (b'+' | b'-') => {
+                    pos += 1;
+                    let hours = parse_digits(bytes, &mut pos, 1, 2)?;
+                    let minutes = if bytes.get(pos) == Some(&b':') {
+                        pos += 1;
+                        parse_digits(bytes, &mut pos, 2, 2)?
+                    } else {
+                        0
+                    };
+                    let offset = (hours * 60 + minutes) as i32;
+                    Some(if sign == b'-' { -offset } else { offset })
+                }
+                _ => return None,
+            }
+        };
+        if pos != bytes.len() {
+            return None;
+        }
+
+        if !valid_date(year, month, day) || hour > 23 || minute > 59 || second > 59 {
+            return None;
+        }
+        Some(Timestamp::new(
+            year,
+            month as u8,
+            day as u8,
+            Some(TimeOfDay::new(
+                hour as u8,
+                minute as u8,
+                second as u8,
+                nanos,
+            )),
+            tz_minutes,
+        ))
+    }
     /// The year, month and day of the timestamp as written.
     pub fn date(&self) -> (i32, u8, u8) {
         (self.year, self.month, self.day)
@@ -206,6 +325,554 @@ fn days_from_civil(year: i32, month: u8, day: u8) -> i64 {
     era * 146097 + doe - 719468
 }
 
+/// Parses between `min` and `max` ASCII digits. Digits beyond `max` are left
+/// unconsumed so that the caller's next match fails on them.
+fn parse_digits(bytes: &[u8], pos: &mut usize, min: u32, max: u32) -> Option<u32> {
+    let start = *pos;
+    let mut value = 0;
+    while *pos - start < max as usize {
+        let Some(digit) = bytes.get(*pos).filter(|b| b.is_ascii_digit()) else {
+            break;
+        };
+        value = value * 10 + u32::from(*digit - b'0');
+        *pos += 1;
+    }
+    if *pos - start < min as usize {
+        return None;
+    }
+    Some(value)
+}
+
+fn parse_byte(bytes: &[u8], pos: &mut usize, byte: u8) -> Option<()> {
+    if bytes.get(*pos) == Some(&byte) {
+        *pos += 1;
+        return Some(());
+    }
+    None
+}
+
+fn skip_whitespace(bytes: &[u8], pos: &mut usize) {
+    while matches!(bytes.get(*pos), Some(b' ' | b'\t')) {
+        *pos += 1;
+    }
+}
+
+fn valid_date(year: i32, month: u32, day: u32) -> bool {
+    (1..=12).contains(&month) && (1..=days_in_month(year, month)).contains(&day)
+}
+
+/// Length of a month in the proleptic Gregorian calendar. `month` must be in
+/// 1..=12.
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+/// Generates the trait methods that [`ExtractString`] rejects.
+macro_rules! unsupported_serializer_methods {
+    ($ret:ty, $($method:ident($($arg:ident: $argty:ty),*)),* $(,)?) => {
+        $(
+            fn $method(self, $($arg: $argty),*) -> Result<$ret, crate::Error> {
+                Err(unsupported_payload())
+            }
+        )*
+    };
+}
+
+impl serde::Serialize for Timestamp {
+    /// Serializes as a private newtype-struct token whose payload is the
+    /// canonical string form (see [Display]). This crate's own serializers
+    /// recognize the token: the text serializer emits the payload as a plain
+    /// (unquoted) scalar, and the `Value` serializer rebuilds a
+    /// `Value::Timestamp`. Other serializers see a newtype struct wrapping a
+    /// plain string.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_newtype_struct(TOKEN, &self.to_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Timestamp {
+    /// Accepts the canonical string form, the flat tuple form (3, 7 or 8
+    /// elements), a struct with matching fields, and the crate
+    /// deserializer's private token protocol.
+    fn deserialize<D>(deserializer: D) -> Result<Timestamp, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(TimestampVisitor)
+    }
+}
+
+/// Deserializes a [`Timestamp`] from the shapes listed on its [`Deserialize`]
+/// implementation.
+///
+/// [`Deserialize`]: serde::Deserialize
+pub(crate) struct TimestampVisitor;
+
+impl<'de> Visitor<'de> for TimestampVisitor {
+    type Value = Timestamp;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a YAML 1.1 timestamp, as a string, tuple or struct")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Timestamp, E>
+    where
+        E: de::Error,
+    {
+        Timestamp::parse(value)
+            .ok_or_else(|| de::Error::invalid_value(Unexpected::Str(value), &self))
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Timestamp, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let year: i32 = next_element(&mut seq, 0, &self)?;
+        let month: u8 = next_element(&mut seq, 1, &self)?;
+        let day: u8 = next_element(&mut seq, 2, &self)?;
+
+        let mut time = None;
+        if let Some(hour) = seq.next_element()? {
+            let minute: u8 = next_element(&mut seq, 4, &self)?;
+            let second: u8 = next_element(&mut seq, 5, &self)?;
+            let nanosecond: u32 = next_element(&mut seq, 6, &self)?;
+            time = Some(TimeOfDay::new(hour, minute, second, nanosecond));
+        }
+
+        let tz_minutes = if time.is_some() {
+            seq.next_element()?
+        } else {
+            None
+        };
+        if seq.next_element::<de::IgnoredAny>()?.is_some() {
+            return Err(de::Error::custom(
+                "expected a timestamp tuple of 3, 7 or 8 elements",
+            ));
+        }
+        Ok(Timestamp::new(year, month, day, time, tz_minutes))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Timestamp, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut year = None;
+        let mut month = None;
+        let mut day = None;
+        let mut time = None;
+        let mut tz_minutes = None;
+
+        while let Some(field) = map.next_key::<Field>()? {
+            match field {
+                Field::Year => year = Some(map.next_value()?),
+                Field::Month => month = Some(map.next_value()?),
+                Field::Day => day = Some(map.next_value()?),
+                Field::Time => time = map.next_value()?,
+                Field::TzMinutes => tz_minutes = Some(map.next_value()?),
+                _ => {
+                    map.next_value::<de::IgnoredAny>()?;
+                }
+            }
+        }
+
+        Ok(Timestamp::new(
+            year.ok_or_else(|| de::Error::missing_field("year"))?,
+            month.ok_or_else(|| de::Error::missing_field("month"))?,
+            day.ok_or_else(|| de::Error::missing_field("day"))?,
+            time,
+            tz_minutes,
+        ))
+    }
+
+    fn visit_enum<A>(self, data: A) -> Result<Timestamp, A::Error>
+    where
+        A: EnumAccess<'de>,
+    {
+        // The crate deserializer's private token protocol for resolved
+        // timestamp scalars: the variant name is the token and the variant is
+        // the component struct.
+        let (tag, contents) = data.variant_seed(TagStringVisitor)?;
+        if tag != TOKEN {
+            return Err(de::Error::custom(format_args!(
+                "invalid timestamp tag: {tag}"
+            )));
+        }
+        contents.struct_variant(FIELDS, self)
+    }
+}
+
+/// A field name of the struct-shaped timestamp form.
+enum Field {
+    Year,
+    Month,
+    Day,
+    Hour,
+    Minute,
+    Second,
+    Nanosecond,
+    Time,
+    TzMinutes,
+    Other,
+}
+
+impl<'de> de::Deserialize<'de> for Field {
+    fn deserialize<D>(deserializer: D) -> Result<Field, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_identifier(FieldVisitor)
+    }
+}
+
+struct FieldVisitor;
+
+impl Visitor<'_> for FieldVisitor {
+    type Value = Field;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a timestamp field")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Field, E>
+    where
+        E: de::Error,
+    {
+        Ok(match value {
+            "year" => Field::Year,
+            "month" => Field::Month,
+            "day" => Field::Day,
+            "hour" => Field::Hour,
+            "minute" => Field::Minute,
+            "second" => Field::Second,
+            "nanosecond" => Field::Nanosecond,
+            "time" => Field::Time,
+            "tz_minutes" => Field::TzMinutes,
+            _ => Field::Other,
+        })
+    }
+}
+
+/// Presents the components of a resolved [`Timestamp`] as a struct, for the
+/// crate deserializer's private token protocol and for deserializing a
+/// [`Value::Timestamp`](crate::Value) into other types. The optional `time`
+/// and `tz_minutes` fields are omitted when absent.
+pub(crate) struct TimestampFields {
+    timestamp: Timestamp,
+    state: u8,
+}
+
+impl TimestampFields {
+    pub(crate) fn new(timestamp: Timestamp) -> Self {
+        TimestampFields {
+            timestamp,
+            state: 0,
+        }
+    }
+}
+
+impl<'de> MapAccess<'de> for TimestampFields {
+    type Error = crate::Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, crate::Error>
+    where
+        K: DeserializeSeed<'de>,
+    {
+        loop {
+            let index = usize::from(self.state);
+            let Some(name) = FIELDS.get(index) else {
+                return Ok(None);
+            };
+            self.state += 1;
+            let present = match *name {
+                "time" => self.timestamp.time.is_some(),
+                "tz_minutes" => self.timestamp.tz_minutes.is_some(),
+                _ => true,
+            };
+            if present {
+                return seed
+                    .deserialize(StrDeserializer::<crate::Error>::new(name))
+                    .map(Some);
+            }
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, crate::Error>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        let timestamp = self.timestamp;
+        match FIELDS[usize::from(self.state) - 1] {
+            "year" => seed.deserialize(I32Deserializer::<crate::Error>::new(timestamp.year)),
+            "month" => seed.deserialize(U8Deserializer::<crate::Error>::new(timestamp.month)),
+            "day" => seed.deserialize(U8Deserializer::<crate::Error>::new(timestamp.day)),
+            "time" => {
+                let time = timestamp.time.expect("absent time field");
+                let components = [
+                    u64::from(time.hour),
+                    u64::from(time.minute),
+                    u64::from(time.second),
+                    u64::from(time.nanosecond),
+                ];
+                seed.deserialize(SomeDeserializer(SeqDeserializer::new(
+                    components.into_iter(),
+                )))
+            }
+            _ => {
+                let tz_minutes = timestamp.tz_minutes.expect("absent tz_minutes field");
+                seed.deserialize(I32Deserializer::<crate::Error>::new(tz_minutes))
+            }
+        }
+    }
+}
+
+/// Wraps a deserializer so that its value is presented as `Some`.
+struct SomeDeserializer<D>(D);
+
+impl<'de, D> de::Deserializer<'de> for SomeDeserializer<D>
+where
+    D: de::Deserializer<'de>,
+{
+    type Error = D::Error;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, D::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_some(self.0)
+    }
+
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, D::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_some(self.0)
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf unit unit_struct newtype_struct seq tuple tuple_struct
+        map struct enum identifier ignored_any
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TimeOfDay {
+    /// Accepts a 4-element tuple `(hour, minute, second, nanosecond)` or a
+    /// struct with matching fields.
+    fn deserialize<D>(deserializer: D) -> Result<TimeOfDay, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(TimeOfDayVisitor)
+    }
+}
+
+struct TimeOfDayVisitor;
+
+impl<'de> Visitor<'de> for TimeOfDayVisitor {
+    type Value = TimeOfDay;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter
+            .write_str("a time of day, as a tuple or struct of hour, minute, second and nanosecond")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<TimeOfDay, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        Ok(TimeOfDay::new(
+            next_element(&mut seq, 0, &self)?,
+            next_element(&mut seq, 1, &self)?,
+            next_element(&mut seq, 2, &self)?,
+            next_element(&mut seq, 3, &self)?,
+        ))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<TimeOfDay, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut hour = None;
+        let mut minute = None;
+        let mut second = None;
+        let mut nanosecond = None;
+
+        while let Some(field) = map.next_key::<Field>()? {
+            match field {
+                Field::Hour => hour = Some(map.next_value()?),
+                Field::Minute => minute = Some(map.next_value()?),
+                Field::Second => second = Some(map.next_value()?),
+                Field::Nanosecond => nanosecond = Some(map.next_value()?),
+                _ => {
+                    map.next_value::<de::IgnoredAny>()?;
+                }
+            }
+        }
+
+        Ok(TimeOfDay::new(
+            hour.ok_or_else(|| de::Error::missing_field("hour"))?,
+            minute.ok_or_else(|| de::Error::missing_field("minute"))?,
+            second.ok_or_else(|| de::Error::missing_field("second"))?,
+            nanosecond.ok_or_else(|| de::Error::missing_field("nanosecond"))?,
+        ))
+    }
+}
+
+/// Deserializes one tuple element, reporting its index if the tuple is too
+/// short.
+fn next_element<'de, A, T>(
+    seq: &mut A,
+    index: usize,
+    expected: &dyn de::Expected,
+) -> Result<T, A::Error>
+where
+    A: SeqAccess<'de>,
+    T: serde::Deserialize<'de>,
+{
+    seq.next_element()?
+        .ok_or_else(|| <A::Error as de::Error>::invalid_length(index, expected))
+}
+
+/// Reads the canonical string payload of a serialized [`Timestamp`] without
+/// quoting it. The crate's text serializer uses this to recognize the private
+/// token issued by [`Serialize for Timestamp`] and emit a plain scalar.
+///
+/// [`Serialize for Timestamp`]: serde::Serialize
+pub(crate) struct ExtractString;
+
+impl serde::Serializer for ExtractString {
+    type Ok = String;
+    type Error = crate::Error;
+
+    type SerializeSeq = ser::Impossible<String, crate::Error>;
+    type SerializeTuple = ser::Impossible<String, crate::Error>;
+    type SerializeTupleStruct = ser::Impossible<String, crate::Error>;
+    type SerializeTupleVariant = ser::Impossible<String, crate::Error>;
+    type SerializeMap = ser::Impossible<String, crate::Error>;
+    type SerializeStruct = ser::Impossible<String, crate::Error>;
+    type SerializeStructVariant = ser::Impossible<String, crate::Error>;
+
+    fn serialize_str(self, value: &str) -> Result<String, crate::Error> {
+        Ok(value.to_owned())
+    }
+
+    fn serialize_some<T>(self, _value: &T) -> Result<String, crate::Error>
+    where
+        T: ?Sized + serde::Serialize,
+    {
+        Err(unsupported_payload())
+    }
+
+    fn serialize_newtype_struct<T>(
+        self,
+        _name: &'static str,
+        _value: &T,
+    ) -> Result<String, crate::Error>
+    where
+        T: ?Sized + serde::Serialize,
+    {
+        Err(unsupported_payload())
+    }
+
+    fn serialize_newtype_variant<T>(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _value: &T,
+    ) -> Result<String, crate::Error>
+    where
+        T: ?Sized + serde::Serialize,
+    {
+        Err(unsupported_payload())
+    }
+
+    unsupported_serializer_methods! { String,
+        serialize_bool(_value: bool),
+        serialize_i8(_value: i8),
+        serialize_i16(_value: i16),
+        serialize_i32(_value: i32),
+        serialize_i64(_value: i64),
+        serialize_i128(_value: i128),
+        serialize_u8(_value: u8),
+        serialize_u16(_value: u16),
+        serialize_u32(_value: u32),
+        serialize_u64(_value: u64),
+        serialize_u128(_value: u128),
+        serialize_f32(_value: f32),
+        serialize_f64(_value: f64),
+        serialize_char(_value: char),
+        serialize_bytes(_value: &[u8]),
+        serialize_none(),
+        serialize_unit(),
+        serialize_unit_struct(_name: &'static str),
+        serialize_unit_variant(
+            _name: &'static str,
+            _variant_index: u32,
+            _variant: &'static str
+        ),
+    }
+
+    unsupported_serializer_methods! {
+        Self::SerializeSeq,
+        serialize_seq(_len: Option<usize>),
+    }
+
+    unsupported_serializer_methods! {
+        Self::SerializeTuple,
+        serialize_tuple(_len: usize),
+    }
+
+    unsupported_serializer_methods! {
+        Self::SerializeTupleStruct,
+        serialize_tuple_struct(_name: &'static str, _len: usize),
+    }
+
+    unsupported_serializer_methods! {
+        Self::SerializeTupleVariant,
+        serialize_tuple_variant(
+            _name: &'static str,
+            _variant_index: u32,
+            _variant: &'static str,
+            _len: usize
+        ),
+    }
+
+    unsupported_serializer_methods! {
+        Self::SerializeMap,
+        serialize_map(_len: Option<usize>),
+    }
+
+    unsupported_serializer_methods! {
+        Self::SerializeStruct,
+        serialize_struct(_name: &'static str, _len: usize),
+    }
+
+    unsupported_serializer_methods! {
+        Self::SerializeStructVariant,
+        serialize_struct_variant(
+            _name: &'static str,
+            _variant_index: u32,
+            _variant: &'static str,
+            _len: usize
+        ),
+    }
+}
+fn unsupported_payload() -> crate::Error {
+    <crate::Error as ser::Error>::custom("expected a timestamp string")
+}
 
 #[cfg(test)]
 mod tests {
@@ -235,7 +902,13 @@ mod tests {
     fn comparison_normalizes_offsets() {
         let plus_two = ts(2001, 12, 15, Some(TimeOfDay::new(2, 0, 0, 0)), Some(2 * 60));
         let zulu = ts(2001, 12, 15, Some(TimeOfDay::new(0, 0, 0, 0)), Some(0));
-        let minus_five = ts(2001, 12, 14, Some(TimeOfDay::new(19, 0, 0, 0)), Some(-5 * 60));
+        let minus_five = ts(
+            2001,
+            12,
+            14,
+            Some(TimeOfDay::new(19, 0, 0, 0)),
+            Some(-5 * 60),
+        );
         assert_eq!(plus_two, zulu);
         assert_eq!(plus_two, minus_five);
         assert!(ts(2001, 12, 15, Some(TimeOfDay::new(0, 0, 0, 1)), None) > zulu);
@@ -264,7 +937,14 @@ mod tests {
             "2001-12-15 02:59:43"
         );
         assert_eq!(
-            ts(2001, 12, 15, Some(TimeOfDay::new(2, 59, 43, 100_000_000)), None).to_string(),
+            ts(
+                2001,
+                12,
+                15,
+                Some(TimeOfDay::new(2, 59, 43, 100_000_000)),
+                None
+            )
+            .to_string(),
             "2001-12-15 02:59:43.100000"
         );
         assert_eq!(
@@ -273,11 +953,25 @@ mod tests {
         );
         // The zone is displayed as specified; the instant is not normalized.
         assert_eq!(
-            ts(2001, 12, 15, Some(TimeOfDay::new(2, 59, 43, 0)), Some(-5 * 60)).to_string(),
+            ts(
+                2001,
+                12,
+                15,
+                Some(TimeOfDay::new(2, 59, 43, 0)),
+                Some(-5 * 60)
+            )
+            .to_string(),
             "2001-12-15 02:59:43-05:00"
         );
         assert_eq!(
-            ts(2001, 12, 15, Some(TimeOfDay::new(2, 30, 0, 0)), Some(5 * 60 + 30)).to_string(),
+            ts(
+                2001,
+                12,
+                15,
+                Some(TimeOfDay::new(2, 30, 0, 0)),
+                Some(5 * 60 + 30)
+            )
+            .to_string(),
             "2001-12-15 02:30:00+05:30"
         );
         // Timestamps denoting the same instant can display differently.
@@ -285,5 +979,106 @@ mod tests {
         let b = ts(2001, 12, 15, Some(TimeOfDay::new(0, 0, 0, 0)), Some(0));
         assert_eq!(a, b);
         assert_ne!(a.to_string(), b.to_string());
+    }
+
+    #[test]
+    fn parse_accepts_the_spec_grammar() {
+        // The examples from https://yaml.org/type/timestamp.html.
+        assert_eq!(
+            Timestamp::parse("2001-12-15T02:59:43.1Z"),
+            Some(ts(
+                2001,
+                12,
+                15,
+                Some(TimeOfDay::new(2, 59, 43, 100_000_000)),
+                Some(0)
+            ))
+        );
+        assert_eq!(
+            Timestamp::parse("2001-12-14t21:59:43.10-05:00"),
+            Some(ts(
+                2001,
+                12,
+                14,
+                Some(TimeOfDay::new(21, 59, 43, 100_000_000)),
+                Some(-300)
+            ))
+        );
+        assert_eq!(
+            Timestamp::parse("2001-12-14 21:59:43.10 -5"),
+            Some(ts(
+                2001,
+                12,
+                14,
+                Some(TimeOfDay::new(21, 59, 43, 100_000_000)),
+                Some(-300)
+            ))
+        );
+        assert_eq!(
+            Timestamp::parse("2001-12-15 2:59:43.10"),
+            Some(ts(
+                2001,
+                12,
+                15,
+                Some(TimeOfDay::new(2, 59, 43, 100_000_000)),
+                None
+            ))
+        );
+        assert_eq!(
+            Timestamp::parse("2002-12-14"),
+            Some(ts(2002, 12, 14, None, None))
+        );
+        // One-digit month and day are allowed in the date-time form.
+        assert_eq!(
+            Timestamp::parse("2001-2-4 2:59:43"),
+            Some(ts(2001, 2, 4, Some(TimeOfDay::new(2, 59, 43, 0)), None))
+        );
+        // A zone minute is optional; extra fraction digits are truncated.
+        assert_eq!(
+            Timestamp::parse("2001-12-15 02:59:43.123456789 +05:30"),
+            Some(ts(
+                2001,
+                12,
+                15,
+                Some(TimeOfDay::new(2, 59, 43, 123_456_000)),
+                Some(330)
+            ))
+        );
+        // All four spec examples denote the same instant.
+        let a = Timestamp::parse("2001-12-15T02:59:43.1Z").unwrap();
+        let b = Timestamp::parse("2001-12-14t21:59:43.10-05:00").unwrap();
+        let c = Timestamp::parse("2001-12-14 21:59:43.10 -5").unwrap();
+        let d = Timestamp::parse("2001-12-15 2:59:43.10").unwrap();
+        assert!(a == b && b == c && c == d);
+    }
+
+    #[test]
+    fn parse_rejects_non_timestamps() {
+        for input in [
+            "",
+            "2001",
+            "2001-12",
+            // One-digit month or day in the date-only form.
+            "2001-2-15",
+            "2001-12-5",
+            // Out of range on the calendar.
+            "2001-13-01",
+            "2001-00-01",
+            "2001-02-29",
+            "2000-02-30",
+            "2001-04-31",
+            "2001-12-15T24:00:00",
+            "2001-12-15T02:60:00",
+            "2001-12-15T02:59:60",
+            // Grammar violations.
+            "2001-12-15 2:59:43UTC",
+            "2001-12-15 2:59:43 z",
+            "2001-12-15 2:59",
+            "2001-12-15T2:59:43+",
+            "2001-12-15junk",
+            "2001-12-15 02:59:43 Z ",
+        ] {
+            assert_eq!(Timestamp::parse(input), None, "{input:?}");
+        }
     }
 }

@@ -1,6 +1,6 @@
-use crate::{Mapping, Value};
 #[cfg(feature = "yaml_11")]
 use crate::Timestamp;
+use crate::{Mapping, Value};
 
 // Implement a bunch of conversion to make it easier to create YAML values
 // on the fly.

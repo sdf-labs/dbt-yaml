@@ -20,10 +20,11 @@ impl Serialize for Value {
             Value::Bool(b, ..) => serializer.serialize_bool(*b),
             Value::Number(n, ..) => n.serialize(serializer),
             Value::String(s, ..) => serializer.serialize_str(s),
-            // Serde's data model has no timestamp type; deliver as a string
-            // (this is also what chrono's Deserialize impls expect).
+            // Serde's data model has no timestamp type; transport via a private
+            // newtype-struct token that this crate's serializers recognize and
+            // emit as a plain scalar in the canonical form.
             #[cfg(feature = "yaml_11")]
-            Value::Timestamp(t, ..) => serializer.serialize_str(&t.to_string()),
+            Value::Timestamp(t, ..) => t.serialize(serializer),
             Value::Sequence(seq, ..) => seq.serialize(serializer),
             Value::Mapping(mapping, ..) => {
                 use serde::ser::SerializeMap;
@@ -185,10 +186,22 @@ impl ser::Serializer for Serializer {
         Ok(Value::String(variant.to_owned(), span))
     }
 
-    fn serialize_newtype_struct<T>(self, _name: &'static str, value: &T) -> Result<Value>
+    fn serialize_newtype_struct<T>(self, name: &'static str, value: &T) -> Result<Value>
     where
         T: ?Sized + ser::Serialize,
     {
+        #[cfg(not(feature = "yaml_11"))]
+        let _ = name;
+        #[cfg(feature = "yaml_11")]
+        // The payload is the canonical string; this direction is rare enough
+        // that re-parsing it beats giving timestamps a bespoke payload shape.
+        if name == crate::timestamp::TOKEN {
+            let span = spanned::take_span().unwrap_or_default();
+            let repr = value.serialize(crate::timestamp::ExtractString)?;
+            let timestamp = crate::Timestamp::parse(&repr)
+                .ok_or_else(|| <Error as ser::Error>::custom("invalid timestamp"))?;
+            return Ok(Value::Timestamp(timestamp, span));
+        }
         value.serialize(self)
     }
 

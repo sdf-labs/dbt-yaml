@@ -812,3 +812,328 @@ fn test_multiline_string() {
 
     test_de(yaml, &expected);
 }
+
+#[cfg(feature = "yaml_11")]
+mod yaml_11_timestamps {
+    use dbt_yaml::{TimeOfDay, Timestamp, Value};
+    use indoc::indoc;
+    use serde_derive::Deserialize;
+    use std::collections::BTreeMap;
+
+    fn ts(
+        year: i32,
+        month: u8,
+        day: u8,
+        time: Option<(u8, u8, u8, u32)>,
+        tz_minutes: Option<i32>,
+    ) -> Value {
+        Value::timestamp(Timestamp::new(
+            year,
+            month,
+            day,
+            time.map(|(h, m, s, n)| TimeOfDay::new(h, m, s, n)),
+            tz_minutes,
+        ))
+    }
+
+    #[test]
+    fn test_timestamp_resolution() {
+        // The examples from https://yaml.org/type/timestamp.html.
+        let yaml = indoc! {"
+            canonical: 2001-12-15T02:59:43.1Z
+            valid_iso8601: 2001-12-14t21:59:43.10-05:00
+            space_separated: 2001-12-14 21:59:43.10 -5
+            no_time_zone: 2001-12-15 2:59:43.10
+            date: 2002-12-14
+        "};
+        let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
+        let mapping = value.as_mapping().unwrap();
+
+        // The first four denote the same instant; per the spec, an omitted
+        // zone means UTC.
+        let instant = ts(2001, 12, 15, Some((2, 59, 43, 100_000_000)), Some(0));
+        for key in [
+            "canonical",
+            "valid_iso8601",
+            "space_separated",
+            "no_time_zone",
+        ] {
+            assert_eq!(mapping.get(key).unwrap(), &instant, "{key}");
+        }
+        assert_eq!(mapping.get("date").unwrap(), &ts(2002, 12, 14, None, None));
+    }
+
+    #[test]
+    fn test_timestamp_grammar_details() {
+        // One-digit month/day/hour in the date-time form, optional zone
+        // minutes, fraction truncated to microseconds.
+        let value = dbt_yaml::from_str::<Value>("2001-2-4 2:59:43.123456789 +5").unwrap();
+        assert_eq!(
+            value,
+            ts(2001, 2, 4, Some((2, 59, 43, 123_456_000)), Some(300))
+        );
+    }
+
+    #[test]
+    fn test_timestamp_resolution_rejects() {
+        // Out-of-range or non-matching scalars stay strings.
+        for yaml in [
+            "2001-2-15", // the date-only form requires two-digit month and day
+            "2001-13-01",
+            "2001-02-29", // not a leap year
+            "2001-12-15T24:00:00",
+            "2001-12-15 2:59",
+            "2001-12",
+        ] {
+            let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
+            match value {
+                Value::String(string, ..) => assert_eq!(string, *yaml),
+                _ => panic!("expected string. input={:?}, result={:?}", yaml, value),
+            }
+        }
+
+        // Quoted scalars never resolve.
+        let value = dbt_yaml::from_str::<Value>("\"2001-12-15\"").unwrap();
+        assert_eq!(value, Value::string("2001-12-15".to_owned()));
+    }
+
+    #[test]
+    fn test_timestamp_round_trip() {
+        let value = dbt_yaml::from_str::<Value>("d: 2001-12-14t21:59:43.10-05:00\n").unwrap();
+        let yaml = dbt_yaml::to_string(&value).unwrap();
+        assert_eq!(yaml, "d: 2001-12-14 21:59:43.100000-05:00\n");
+        let reparsed = dbt_yaml::from_str::<Value>(&yaml).unwrap();
+        assert_eq!(value, reparsed);
+        assert!(reparsed["d"].is_timestamp());
+    }
+
+    #[test]
+    fn test_timestamp_string_round_trip() {
+        // A string that matches the timestamp grammar is quoted on
+        // serialization so that it stays a string.
+        let value = Value::string("2001-12-15".to_owned());
+        let yaml = dbt_yaml::to_string(&value).unwrap();
+        assert_eq!(yaml, "'2001-12-15'\n");
+        let reparsed = dbt_yaml::from_str::<Value>(&yaml).unwrap();
+        assert_eq!(reparsed, value);
+    }
+
+    #[test]
+    fn test_timestamp_typed() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct Config {
+            created: Timestamp,
+            updated: Option<Timestamp>,
+        }
+
+        let yaml = indoc! {"
+            created: 2001-12-15T02:59:43.1Z
+            updated: 2002-12-14
+        "};
+        let config: Config = dbt_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            config,
+            Config {
+                created: Timestamp::new(
+                    2001,
+                    12,
+                    15,
+                    Some(TimeOfDay::new(2, 59, 43, 100_000_000)),
+                    Some(0)
+                ),
+                updated: Some(Timestamp::new(2002, 12, 14, None, None)),
+            }
+        );
+
+        // From a Value, a timestamp delivers as its canonical string to
+        // string-typed fields (this is what chrono's Deserialize impls
+        // expect)...
+        let value = dbt_yaml::from_str::<Value>("2001-12-15T02:59:43.1Z").unwrap();
+        let string: String = dbt_yaml::from_value(value.clone()).unwrap();
+        assert_eq!(string, "2001-12-15 02:59:43.100000Z");
+        // ...or as a Timestamp to timestamp-typed fields.
+        let timestamp: Timestamp = dbt_yaml::from_value(value).unwrap();
+        assert_eq!(timestamp, config.created);
+    }
+
+    #[test]
+    fn test_timestamp_as_mapping_key() {
+        let yaml = indoc! {"
+            2001-12-15: a
+            2001-12-14t21:59:43.10-05:00: b
+        "};
+        let map: BTreeMap<Timestamp, String> = dbt_yaml::from_str(yaml).unwrap();
+        assert_eq!(map.len(), 2);
+
+        // Keys are looked up by instant: a different spelling of the same
+        // instant finds the entry.
+        let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
+        let mapping = value.as_mapping().unwrap();
+        let probe = ts(2001, 12, 15, Some((0, 0, 0, 0)), Some(0));
+        assert_eq!(mapping.get(&probe).unwrap().as_str().unwrap(), "a");
+    }
+
+    #[test]
+    fn test_timestamp_duplicate_keys() {
+        // Two spellings of the same instant are duplicate keys.
+        let yaml = indoc! {"
+            2001-12-15: a
+            2001-12-15T00:00:00Z: b
+        "};
+        let err = dbt_yaml::from_str::<Value>(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("duplicate entry with key 2001-12-15"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_timestamp_tuple_form() {
+        // 3, 7 or 8 elements, depending on the optional time-of-day and zone.
+        let time = TimeOfDay::new(2, 59, 43, 100_000_000);
+        let cases = [
+            ("[2001, 12, 15]", Timestamp::new(2001, 12, 15, None, None)),
+            (
+                "[2001, 12, 15, 2, 59, 43, 100000000]",
+                Timestamp::new(2001, 12, 15, Some(time), None),
+            ),
+            (
+                "[2001, 12, 15, 2, 59, 43, 100000000, -300]",
+                Timestamp::new(2001, 12, 15, Some(time), Some(-300)),
+            ),
+        ];
+        for (yaml, expected) in cases {
+            let parsed: Timestamp = dbt_yaml::from_str(yaml).unwrap();
+            assert_eq!(parsed, expected, "{yaml}");
+        }
+
+        // Too short, too long, and a zone without a time-of-day are errors.
+        for yaml in [
+            "[2001, 12, 15, 2]",
+            "[2001, 12, 15, 2, 59]",
+            "[2001, 12, 15, 2, 59, 43, 0, -300, 1]",
+            "[2001, 12, 15, -300]",
+        ] {
+            assert!(dbt_yaml::from_str::<Timestamp>(yaml).is_err(), "{yaml}");
+        }
+    }
+
+    #[test]
+    fn test_timestamp_struct_form() {
+        let time = TimeOfDay::new(2, 59, 43, 100_000_000);
+        let cases = [
+            (
+                "{year: 2001, month: 12, day: 15}",
+                Timestamp::new(2001, 12, 15, None, None),
+            ),
+            // Field order does not matter, and the time-of-day may be a
+            // tuple or a struct.
+            (
+                "{day: 15, year: 2001, month: 12, time: [2, 59, 43, 100000000]}",
+                Timestamp::new(2001, 12, 15, Some(time), None),
+            ),
+            (
+                "{year: 2001, month: 12, day: 15, time: {hour: 2, minute: 59, second: 43, nanosecond: 100000000}, tz_minutes: -300}",
+                Timestamp::new(2001, 12, 15, Some(time), Some(-300)),
+            ),
+            // An explicit null time-of-day is the same as omitting it.
+            (
+                "{year: 2001, month: 12, day: 15, time: null}",
+                Timestamp::new(2001, 12, 15, None, None),
+            ),
+        ];
+        for (yaml, expected) in cases {
+            let parsed: Timestamp = dbt_yaml::from_str(yaml).unwrap();
+            assert_eq!(parsed, expected, "{yaml}");
+        }
+
+        // Unknown fields are ignored; missing fields are an error.
+        let parsed: Timestamp =
+            dbt_yaml::from_str("{year: 2001, month: 12, day: 15, extra: 1}").unwrap();
+        assert_eq!(parsed, Timestamp::new(2001, 12, 15, None, None));
+        for yaml in [
+            "{year: 2001, month: 12}",
+            "{year: 2001, month: 12, day: 15, time: [2, 59]}",
+        ] {
+            assert!(dbt_yaml::from_str::<Timestamp>(yaml).is_err(), "{yaml}");
+        }
+    }
+
+    #[test]
+    fn test_timestamp_shapes_as_struct_field() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct Config {
+            created: Timestamp,
+        }
+
+        let expected = Config {
+            created: Timestamp::new(2001, 12, 15, None, None),
+        };
+        for yaml in [
+            "created: 2001-12-15",
+            "created: \"2001-12-15\"",
+            "created: [2001, 12, 15]",
+            "created: {year: 2001, month: 12, day: 15}",
+        ] {
+            assert_eq!(
+                dbt_yaml::from_str::<Config>(yaml).unwrap(),
+                expected,
+                "{yaml}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_timestamp_type_survives_value_conversion() {
+        let timestamp = Timestamp::new(
+            2001,
+            12,
+            15,
+            Some(TimeOfDay::new(2, 59, 43, 100_000_000)),
+            Some(-300),
+        );
+
+        // Serializing to a Value keeps the Timestamp type instead of
+        // flattening it to a string.
+        let value = dbt_yaml::to_value(timestamp).unwrap();
+        assert!(value.is_timestamp());
+        assert_eq!(value, Value::timestamp(timestamp));
+
+        // Deserializing a Timestamp Value keeps the Timestamp type too...
+        let parsed: Timestamp = dbt_yaml::from_value(value.clone()).unwrap();
+        assert_eq!(parsed, timestamp);
+        // ...while string-typed targets still receive the canonical form.
+        let string: String = dbt_yaml::from_value(value).unwrap();
+        assert_eq!(string, "2001-12-15 02:59:43.100000-05:00");
+
+        // A zone without a time-of-day has no place in the component payload
+        // and, like Display, does not survive serialization.
+        let zone_only = Timestamp::new(2001, 12, 15, None, Some(-300));
+        let value = dbt_yaml::to_value(zone_only).unwrap();
+        assert_eq!(
+            value.as_timestamp().unwrap(),
+            &Timestamp::new(2001, 12, 15, None, None)
+        );
+    }
+
+    #[test]
+    fn test_timestamp_span() {
+        // A resolved timestamp keeps the span of its scalar, exactly like a
+        // string scalar.
+        let value = dbt_yaml::from_str::<Value>("d: 2001-12-15\ns: 2001-12-15\n").unwrap();
+        let timestamp = value["d"].span();
+        assert_eq!(timestamp.start.line, 1);
+        assert_eq!(timestamp.start.index, 3);
+        assert_eq!(timestamp.end.index, 14);
+
+        let string = value["s"].span();
+        assert_eq!(
+            string.end.index - string.start.index,
+            timestamp.end.index - timestamp.start.index
+        );
+
+        let sequence = dbt_yaml::from_str::<Value>("- 2001-12-15\n").unwrap();
+        assert_eq!(sequence[0].span().start.index, 2);
+    }
+}

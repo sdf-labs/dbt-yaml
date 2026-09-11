@@ -218,6 +218,15 @@ impl<'de> serde::de::Visitor<'de> for ValueVisitor<'_, '_> {
         A: EnumAccess<'de>,
     {
         let (tag, contents) = data.variant_seed(TagStringVisitor)?;
+        // The deserializer transports a resolved YAML 1.1 timestamp scalar as
+        // an enum with a private token as the variant name and its components
+        // as the variant's struct fields; recognize it here.
+        #[cfg(feature = "yaml_11")]
+        if tag == crate::timestamp::TOKEN {
+            let timestamp = contents
+                .struct_variant(crate::timestamp::FIELDS, crate::timestamp::TimestampVisitor)?;
+            return Ok(Value::timestamp(timestamp));
+        }
         let value = contents.newtype_variant()?;
         Ok(Value::tagged(TaggedValue { tag, value }))
     }

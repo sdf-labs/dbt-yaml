@@ -1210,10 +1210,86 @@ where
             return visitor.visit_f64(float);
         }
     }
+    #[cfg(feature = "yaml_11")]
+    if let Some(timestamp) = crate::Timestamp::parse(v) {
+        return visitor.visit_enum(TimestampAccess::new(timestamp));
+    }
     if let Some(borrowed) = parse_borrowed_str(v, repr, style) {
         visitor.visit_borrowed_str(borrowed)
     } else {
         visitor.visit_str(v)
+    }
+}
+
+/// Transports a resolved YAML 1.1 timestamp scalar through the serde data
+/// model, which has no timestamp type: the timestamp is presented as an enum
+/// with a private token as the variant name and its components as the
+/// variant's struct fields (similar to the pattern serde_json uses for
+/// arbitrary-precision numbers). `value::ValueVisitor` recognizes the token
+/// and produces a `Value::Timestamp`; any other visitor sees an enum where
+/// the scalar used to be, which for a string-typed field is an error.
+#[cfg(feature = "yaml_11")]
+struct TimestampAccess {
+    timestamp: crate::Timestamp,
+}
+
+#[cfg(feature = "yaml_11")]
+impl TimestampAccess {
+    fn new(timestamp: crate::Timestamp) -> Self {
+        TimestampAccess { timestamp }
+    }
+}
+
+#[cfg(feature = "yaml_11")]
+impl<'de> de::EnumAccess<'de> for TimestampAccess {
+    type Error = Error;
+    type Variant = Self;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self)>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        let tag = seed.deserialize(StrDeserializer::<Error>::new(crate::timestamp::TOKEN))?;
+        Ok((tag, self))
+    }
+}
+
+#[cfg(feature = "yaml_11")]
+impl<'de> de::VariantAccess<'de> for TimestampAccess {
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<()> {
+        Err(de::Error::invalid_type(
+            de::Unexpected::Enum,
+            &"a timestamp",
+        ))
+    }
+
+    fn newtype_variant_seed<T>(self, _seed: T) -> Result<T::Value>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        Err(de::Error::invalid_type(
+            de::Unexpected::Enum,
+            &"a timestamp",
+        ))
+    }
+
+    fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        Err(de::Error::invalid_type(
+            de::Unexpected::Enum,
+            &"a timestamp",
+        ))
+    }
+
+    fn struct_variant<V>(self, _fields: &'static [&'static str], visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_map(crate::timestamp::TimestampFields::new(self.timestamp))
     }
 }
 
