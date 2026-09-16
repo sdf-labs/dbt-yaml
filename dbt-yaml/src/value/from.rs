@@ -1,3 +1,5 @@
+#[cfg(feature = "yaml_11")]
+use crate::Timestamp;
 use crate::{Mapping, Value};
 
 // Implement a bunch of conversion to make it easier to create YAML values
@@ -34,6 +36,23 @@ impl From<bool> for Value {
     /// ```
     fn from(f: bool) -> Self {
         Value::Bool(f, Default::default())
+    }
+}
+
+#[cfg(feature = "yaml_11")]
+impl From<Timestamp> for Value {
+    /// Convert `Timestamp` to `Value`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use dbt_yaml::{Timestamp, Value};
+    ///
+    /// let t = Timestamp::new(2001, 12, 15, None, None);
+    /// let x: Value = t.into();
+    /// ```
+    fn from(t: Timestamp) -> Self {
+        Value::timestamp(t)
     }
 }
 

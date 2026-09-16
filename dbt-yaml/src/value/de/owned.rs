@@ -434,7 +434,10 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
     {
         let span = self.value.span().clone();
         self.value.broadcast_end_mark();
-        if super::should_short_circuit_any(self.field_transformer.is_some()) {
+        let is_deserializing_value = super::is_deserializing_value();
+        if is_deserializing_value
+            && (self.field_transformer.is_none() || !crate::verbatim::should_transform_any())
+        {
             // SAFETY: self.unused_key_callback and self.field_transformer are
             // passed in from outside and guaranteed to be valid for 'de
             unsafe {
@@ -449,12 +452,38 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
         }
         maybe_expecting_should_be!(self, deserialize_any, visitor);
         self.maybe_apply_transformation()?;
+        if is_deserializing_value && self.value.is_scalar() {
+            // Scalars cannot be transformed further so always send them through
+            // the fast path; in particular, for the case of `Timestamp` this is
+            // actually required to preserve the type.
+            //
+            // The saved value may already be transformed, unlike state saved
+            // for untagged enum retries, which must stay untransformed -- this
+            // is safe as the untagged enum path always disables
+            // `verbatim::should_transform_any()` and so would be handled by the
+            // previous block; reaching here means that we're purely servicing a
+            // `ValueVisitor` consumer.
+
+            // SAFETY: self.unused_key_callback and self.field_transformer are
+            // passed in from outside and guaranteed to be valid for 'de
+            unsafe {
+                save_deserializer_state(
+                    Some(self.value),
+                    self.path,
+                    self.unused_key_callback,
+                    self.field_transformer,
+                );
+            }
+            return Err(Error::custom("Value deserialized via fast path"));
+        }
 
         match self.value {
             Value::Null(..) => visitor.visit_unit(),
             Value::Bool(v, ..) => visitor.visit_bool(v),
             Value::Number(n, ..) => n.deserialize_any(visitor),
             Value::String(v, ..) => visitor.visit_string(v),
+            #[cfg(feature = "yaml_11")]
+            Value::Timestamp(t, ..) => visitor.visit_string(t.to_string()),
             Value::Sequence(v, ..) => visit_sequence(
                 v,
                 self.path,
@@ -623,6 +652,8 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
         self.value.broadcast_end_mark();
         match self.value.untag() {
             Value::String(v, ..) => visitor.visit_string(v),
+            #[cfg(feature = "yaml_11")]
+            Value::Timestamp(t, ..) => visitor.visit_string(t.to_string()),
             other => Err(other.invalid_type(&visitor)),
         }
         .map_err(|e| error::set_span(e, span, self.path))

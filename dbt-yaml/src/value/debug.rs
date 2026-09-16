@@ -10,6 +10,8 @@ impl Debug for Value {
             Value::Bool(boolean, ..) => write!(formatter, "Bool({})", boolean),
             Value::Number(number, ..) => write!(formatter, "Number({})", number),
             Value::String(string, ..) => write!(formatter, "String({:?})", string),
+            #[cfg(feature = "yaml_11")]
+            Value::Timestamp(timestamp, ..) => write!(formatter, "Timestamp({})", timestamp),
             Value::Sequence(sequence, ..) => {
                 formatter.write_str("Sequence ")?;
                 formatter.debug_list().entries(sequence).finish()

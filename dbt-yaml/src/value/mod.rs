@@ -9,6 +9,8 @@ mod ser;
 pub(crate) mod tagged;
 
 use crate::error::{self, Error, ErrorImpl};
+#[cfg(feature = "yaml_11")]
+use crate::Timestamp;
 use crate::{spanned, Span};
 use serde::de::{Deserialize, DeserializeOwned, IntoDeserializer};
 use serde::Serialize;
@@ -43,6 +45,9 @@ pub enum Value {
     Number(Number, Span),
     /// Represents a YAML string.
     String(String, Span),
+    /// Represents a YAML 1.1 timestamp.
+    #[cfg(feature = "yaml_11")]
+    Timestamp(Timestamp, Span),
     /// Represents a YAML sequence in which the elements are
     /// `dbt_yaml::Value`.
     Sequence(Sequence, Span),
@@ -60,6 +65,8 @@ impl PartialEq for Value {
             (Value::Bool(a, ..), Value::Bool(b, ..)) => a == b,
             (Value::Number(a, ..), Value::Number(b, ..)) => a == b,
             (Value::String(a, ..), Value::String(b, ..)) => a == b,
+            #[cfg(feature = "yaml_11")]
+            (Value::Timestamp(a, ..), Value::Timestamp(b, ..)) => a == b,
             (Value::Sequence(a, ..), Value::Sequence(b, ..)) => a == b,
             (Value::Mapping(a, ..), Value::Mapping(b, ..)) => a == b,
             (Value::Tagged(a, ..), Value::Tagged(b, ..)) => a == b,
@@ -75,6 +82,8 @@ impl PartialOrd for Value {
             (Value::Bool(a, ..), Value::Bool(b, ..)) => a.partial_cmp(b),
             (Value::Number(a, ..), Value::Number(b, ..)) => a.partial_cmp(b),
             (Value::String(a, ..), Value::String(b, ..)) => a.partial_cmp(b),
+            #[cfg(feature = "yaml_11")]
+            (Value::Timestamp(a, ..), Value::Timestamp(b, ..)) => a.partial_cmp(b),
             (Value::Sequence(a, ..), Value::Sequence(b, ..)) => a.partial_cmp(b),
             (Value::Mapping(a, ..), Value::Mapping(b, ..)) => a.partial_cmp(b),
             (Value::Tagged(a, ..), Value::Tagged(b, ..)) => a.partial_cmp(b),
@@ -510,6 +519,64 @@ impl Value {
         }
     }
 
+    /// Returns true if the `Value` is a Timestamp. Returns false otherwise.
+    ///
+    /// For any Value on which `is_timestamp` returns true, `as_timestamp` is
+    /// guaranteed to return the timestamp.
+    ///
+    /// ```
+    /// # use dbt_yaml::{Timestamp, Value};
+    /// let v = Value::timestamp(Timestamp::new(2001, 12, 15, None, None));
+    /// assert!(v.is_timestamp());
+    /// ```
+    #[cfg(feature = "yaml_11")]
+    pub fn is_timestamp(&self) -> bool {
+        self.as_timestamp().is_some()
+    }
+
+    /// If the `Value` is a Timestamp, returns the associated Timestamp.
+    /// Returns None otherwise.
+    ///
+    /// ```
+    /// # use dbt_yaml::{Timestamp, Value};
+    /// let v = Value::timestamp(Timestamp::new(2001, 12, 15, None, None));
+    /// assert_eq!(v.as_timestamp().unwrap().date(), (2001, 12, 15));
+    /// ```
+    ///
+    /// ```
+    /// # use dbt_yaml::Value;
+    /// let v: Value = dbt_yaml::from_str("false").unwrap();
+    /// assert_eq!(v.as_timestamp(), None);
+    /// ```
+    #[cfg(feature = "yaml_11")]
+    pub fn as_timestamp(&self) -> Option<&Timestamp> {
+        match self.untag_ref() {
+            Value::Timestamp(t, ..) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Returns true if the `Value` represents a scalar value; returns false
+    /// otherwise.
+    ///
+    /// A "scalar" `Value` is one that can not recursively contain `Value`
+    /// objects. Basically any value other than a sequence or mapping.
+    ///
+    /// ```
+    /// # use dbt_yaml::Value;
+    /// let v: Value = dbt_yaml::from_str("[1, 2, 3]").unwrap();
+    /// assert!(!v.is_scalar());
+    ///
+    /// let v: Value = dbt_yaml::from_str("false").unwrap();
+    /// assert!(v.is_scalar());
+    /// ```
+    pub fn is_scalar(&self) -> bool {
+        match self {
+            Value::Mapping(..) | Value::Sequence(..) | Value::Tagged(..) => false,
+            _ => true,
+        }
+    }
+
     /// Returns true if the `Value` is a sequence. Returns false otherwise.
     ///
     /// ```
@@ -734,6 +801,8 @@ impl Value {
     /// Returns the contained [Span].
     pub fn span(&self) -> &Span {
         match self {
+            #[cfg(feature = "yaml_11")]
+            Value::Timestamp(_, span) => span,
             Value::Null(span)
             | Value::Bool(_, span)
             | Value::Number(_, span)
@@ -755,6 +824,8 @@ impl Value {
     /// Set the span of the value.
     fn set_span(&mut self, span: Span) {
         match self {
+            #[cfg(feature = "yaml_11")]
+            Value::Timestamp(_, ref mut s) => *s = span,
             Value::Null(ref mut s)
             | Value::Bool(_, ref mut s)
             | Value::Number(_, ref mut s)
@@ -804,6 +875,12 @@ impl Value {
         Value::String(s, Span::zero())
     }
 
+    /// Construct a Timestamp Value with no location information.
+    #[cfg(feature = "yaml_11")]
+    pub const fn timestamp(t: Timestamp) -> Value {
+        Value::Timestamp(t, Span::zero())
+    }
+
     /// Construct a Sequence Value with no location information.
     pub fn sequence(seq: Sequence) -> Value {
         Value::Sequence(seq, Span::zero())
@@ -832,6 +909,8 @@ impl Hash for Value {
             Value::Bool(v, ..) => v.hash(state),
             Value::Number(v, ..) => v.hash(state),
             Value::String(v, ..) => v.hash(state),
+            #[cfg(feature = "yaml_11")]
+            Value::Timestamp(v, ..) => v.hash(state),
             Value::Sequence(v, ..) => v.hash(state),
             Value::Mapping(v, ..) => v.hash(state),
             Value::Tagged(v, ..) => v.hash(state),

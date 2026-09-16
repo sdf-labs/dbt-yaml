@@ -308,7 +308,7 @@ where
     fn serialize_str(self, value: &str) -> Result<()> {
         struct InferScalarStyle;
 
-        impl Visitor<'_> for InferScalarStyle {
+        impl<'de> Visitor<'de> for InferScalarStyle {
             type Value = ScalarStyle;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -345,6 +345,16 @@ where
                 } else {
                     ScalarStyle::Any
                 })
+            }
+
+            fn visit_enum<A>(self, _data: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::EnumAccess<'de>,
+            {
+                // The scalar resolves as a YAML 1.1 timestamp (the only enum
+                // visit_untagged_scalar produces); quote it to keep it a
+                // string on the round trip.
+                Ok(ScalarStyle::SingleQuoted)
             }
 
             fn visit_unit<E>(self) -> Result<Self::Value, E> {
@@ -396,10 +406,24 @@ where
         self.serialize_str(variant)
     }
 
-    fn serialize_newtype_struct<T>(self, _name: &'static str, value: &T) -> Result<()>
+    fn serialize_newtype_struct<T>(self, name: &'static str, value: &T) -> Result<()>
     where
         T: ?Sized + ser::Serialize,
     {
+        #[cfg(not(feature = "yaml_11"))]
+        let _ = name;
+        // A timestamp serializes as a plain scalar in its canonical form,
+        // bypassing the quoting that serialize_str applies to strings that
+        // would otherwise re-resolve as a timestamp.
+        #[cfg(feature = "yaml_11")]
+        if name == crate::timestamp::TOKEN {
+            let repr = value.serialize(crate::timestamp::ExtractString)?;
+            return self.emit_scalar(Scalar {
+                tag: None,
+                value: &repr,
+                style: ScalarStyle::Plain,
+            });
+        }
         value.serialize(self)
     }
 

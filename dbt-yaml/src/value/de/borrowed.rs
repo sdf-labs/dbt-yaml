@@ -431,7 +431,17 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
         let span = self.value.span().clone();
         let path = self.path;
         self.value.broadcast_end_mark();
-        if super::should_short_circuit_any(self.field_transformer.is_some()) {
+        maybe_transform_and_forward_to_value_deserializer!(self, deserialize_any, visitor);
+
+        // Getting to this point means the transformer does not change _this
+        // particular value_. But if this value is a container, we still must
+        // not short-circuit: the transformer must get a chance at the
+        // elements.
+        if super::is_deserializing_value()
+            && (self.value.is_scalar()
+                || self.field_transformer.is_none()
+                || !crate::verbatim::should_transform_any())
+        {
             // SAFETY: self.unused_key_callback and self.field_transformer are
             // passed in from outside and guaranteed to be valid for 'de
             unsafe {
@@ -444,7 +454,6 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
             }
             return Err(Error::custom("Value deserialized via fast path"));
         }
-        maybe_transform_and_forward_to_value_deserializer!(self, deserialize_any, visitor);
 
         maybe_why_not!(
             self.value,
@@ -453,6 +462,8 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                 Value::Bool(v, ..) => visitor.visit_bool(*v),
                 Value::Number(n, ..) => n.deserialize_any(visitor),
                 Value::String(v, ..) => visitor.visit_borrowed_str(v),
+                #[cfg(feature = "yaml_11")]
+                Value::Timestamp(t, ..) => visitor.visit_string(t.to_string()),
                 Value::Sequence(v, ..) => visit_sequence_ref(
                     v,
                     self.path,
@@ -620,6 +631,8 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
             self.value,
             match self.value.untag_ref() {
                 Value::String(v, ..) => visitor.visit_borrowed_str(v),
+                #[cfg(feature = "yaml_11")]
+                Value::Timestamp(t, ..) => visitor.visit_string(t.to_string()),
                 other => Err(other.invalid_type(&visitor)),
             }
             .map_err(|e| error::set_span(e, span, path))
@@ -1538,7 +1551,7 @@ impl<'de> MapAccess<'de> for StructRefDeserializer<'de, '_, '_, '_> {
             None if self.has_unprocessed_flatten_keys() => {
                 self.flatten_keys_done += 1;
 
-                let flattened = self.rest.drain(..).collect::<Vec<_>>();
+                let flattened = std::mem::take(&mut self.rest);
                 // Flatten keys are always dunder-wrapped; do not add them to the path.
                 let path = self.path;
 

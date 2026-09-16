@@ -425,6 +425,13 @@ impl PartialOrd for Mapping {
                 (Value::String(..), _) => Ordering::Less,
                 (_, Value::String(..)) => Ordering::Greater,
 
+                #[cfg(feature = "yaml_11")]
+                (Value::Timestamp(a, ..), Value::Timestamp(b, ..)) => a.cmp(b),
+                #[cfg(feature = "yaml_11")]
+                (Value::Timestamp(..), _) => Ordering::Less,
+                #[cfg(feature = "yaml_11")]
+                (_, Value::Timestamp(..)) => Ordering::Greater,
+
                 (Value::Sequence(a, ..), Value::Sequence(b, ..)) => iter_cmp_by(a, b, total_cmp),
                 (Value::Sequence(..), _) => Ordering::Less,
                 (_, Value::Sequence(..)) => Ordering::Greater,
@@ -808,6 +815,8 @@ impl Display for DuplicateKeyError<'_> {
             Value::Bool(boolean, ..) => write!(formatter, "with key `{}`", boolean),
             Value::Number(number, ..) => write!(formatter, "with key {}", number),
             Value::String(string, ..) => write!(formatter, "with key {:?}", string),
+            #[cfg(feature = "yaml_11")]
+            Value::Timestamp(timestamp, ..) => write!(formatter, "with key {}", timestamp),
             Value::Sequence(..) | Value::Mapping(..) | Value::Tagged(..) => {
                 formatter.write_str("in YAML map")
             }
