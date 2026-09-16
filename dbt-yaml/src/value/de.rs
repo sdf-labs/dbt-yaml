@@ -240,7 +240,18 @@ impl<'de> DeserializeSeed<'de> for ValueVisitor<'_, '_> {
         D: Deserializer<'de>,
     {
         let start = spanned::get_marker();
-        let val = deserializer.deserialize_any(self)?;
+        set_is_deserializing_value();
+        let res = deserializer.deserialize_any(self);
+        let maybe_state = unsafe { load_deserializer_state() };
+        reset_is_deserializing_value();
+
+        // Fast path: if the deserializer has returned a value through the side
+        // channel, then we use it and ignore the result of the deserializer.
+        if let Some(state) = maybe_state {
+            return Ok(state.value);
+        }
+
+        let val = res?;
         let span = Span::from(start..spanned::get_marker());
 
         #[cfg(feature = "filename")]
@@ -384,7 +395,7 @@ impl Value {
 
 #[inline]
 fn should_short_circuit_any(has_transformer: bool) -> bool {
-    if !is_deserializing_value_then_reset() {
+    if !is_deserializing_value() {
         return false;
     }
 
@@ -392,10 +403,16 @@ fn should_short_circuit_any(has_transformer: bool) -> bool {
     !has_transformer || !crate::verbatim::should_transform_any()
 }
 
+/// True if the current [`de::Visitor`] is able to receive a [`Value`] through
+/// the "Deserializer State" side-channel.
+///
+/// This is a plain read: the flag stays set until the caller that armed it with
+/// [`set_is_deserializing_value`] clears it with
+/// [`reset_is_deserializing_value`]. Every arming site must clear the flag in
+/// the same scope, on every path, including error paths.
 #[inline]
-fn is_deserializing_value_then_reset() -> bool {
-    clear_deserializer_state();
-    private::IS_DESERIALIZING_VALUE.with(|cell| cell.replace(false))
+fn is_deserializing_value() -> bool {
+    private::IS_DESERIALIZING_VALUE.with(|cell| cell.get())
 }
 
 #[inline]

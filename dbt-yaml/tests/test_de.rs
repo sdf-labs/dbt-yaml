@@ -924,11 +924,15 @@ mod yaml_11_timestamps {
         struct Config {
             created: Timestamp,
             updated: Option<Timestamp>,
+            created_str: String,
+            updated_str: Option<String>,
         }
 
         let yaml = indoc! {"
             created: 2001-12-15T02:59:43.1Z
             updated: 2002-12-14
+            created_str: 2001-12-15T02:59:43.1Z
+            updated_str: 2002-12-14
         "};
         let config: Config = dbt_yaml::from_str(yaml).unwrap();
         assert_eq!(
@@ -942,12 +946,39 @@ mod yaml_11_timestamps {
                     Some(0)
                 ),
                 updated: Some(Timestamp::new(2002, 12, 14, None, None)),
+                created_str: "2001-12-15T02:59:43.1Z".to_string(),
+                updated_str: Some("2002-12-14".to_string()),
             }
         );
 
         // From a Value, a timestamp delivers as its canonical string to
         // string-typed fields (this is what chrono's Deserialize impls
         // expect)...
+
+        let value: Value = dbt_yaml::from_str(yaml).unwrap();
+        let config: Config = value.to_typed(|_, _, _| {}, |_| Ok(None)).unwrap();
+        assert_eq!(
+            config,
+            Config {
+                created: Timestamp::new(
+                    2001,
+                    12,
+                    15,
+                    Some(TimeOfDay::new(2, 59, 43, 100_000_000)),
+                    Some(0)
+                ),
+                updated: Some(Timestamp::new(2002, 12, 14, None, None)),
+                created_str: "2001-12-15 02:59:43.100000Z".to_string(),
+                updated_str: Some("2002-12-14".to_string()),
+            }
+        );
+
+        let config_val: Value = value
+            .clone()
+            .into_typed(|_, _, _| {}, |_| Ok(None))
+            .unwrap();
+        assert_eq!(config_val, value);
+
         let value = dbt_yaml::from_str::<Value>("2001-12-15T02:59:43.1Z").unwrap();
         let string: String = dbt_yaml::from_value(value.clone()).unwrap();
         assert_eq!(string, "2001-12-15 02:59:43.100000Z");

@@ -285,6 +285,68 @@ fn test_into_typed() {
 }
 
 #[test]
+fn test_value_to_value_with_transformer() {
+    // Value -> Value deserialization with an active field transformer must
+    // still visit nested values: a transformer that leaves a container
+    // unchanged may still transform its contents.
+    fn transformer(v: &Value) -> Result<Option<Value>, Box<dyn std::error::Error + Send + Sync>> {
+        if v.is_u64() {
+            Ok(Some(Value::from(v.as_u64().unwrap() + 100)))
+        } else if v.is_bool() {
+            Ok(Some(Value::from(true)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    let value = dbt_yaml::from_str::<Value>(indoc! {"
+        a: 1
+        b:
+          - 2
+          - c: false
+        "})
+    .unwrap();
+    let expected = dbt_yaml::from_str::<Value>(indoc! {"
+        a: 101
+        b:
+          - 102
+          - c: true
+        "})
+    .unwrap();
+
+    let (transformed, unused_keys): (Value, _) = deserialize_value(value, transformer);
+    assert!(unused_keys.is_empty());
+    assert_eq!(transformed, expected);
+}
+
+#[test]
+fn test_value_to_value_with_transformer_tagged() {
+    // FIXME: the field transformer is not applied to a tag's contents:
+    // `TaggedValue`'s `EnumAccess` impl deserializes them without the
+    // transformer.
+    let value = dbt_yaml::from_str::<Value>("a: !some_tag 1").unwrap();
+    let (round_tripped, unused_keys): (Value, _) = deserialize_value(value.clone(), |_| Ok(None));
+    assert!(unused_keys.is_empty());
+    assert_eq!(round_tripped, value);
+
+    fn tag_transformer(
+        v: &Value,
+    ) -> Result<Option<Value>, Box<dyn std::error::Error + Send + Sync>> {
+        match v {
+            Value::Tagged(..) => Ok(Some(Value::from("replaced"))),
+            _ => Ok(None),
+        }
+    }
+    let value = dbt_yaml::from_str::<Value>("a: !some_tag 1").unwrap();
+    let (transformed, unused_keys): (Value, _) = deserialize_value(value, tag_transformer);
+    assert!(unused_keys.is_empty());
+    assert_eq!(
+        transformed,
+        dbt_yaml::from_str::<Value>("a: replaced").unwrap()
+    );
+}
+
+#[test]
 fn test_into_typed_external_err() {
     #[derive(Debug, PartialEq)]
     struct Error {

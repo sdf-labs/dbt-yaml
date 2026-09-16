@@ -431,7 +431,17 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
         let span = self.value.span().clone();
         let path = self.path;
         self.value.broadcast_end_mark();
-        if super::should_short_circuit_any(self.field_transformer.is_some()) {
+        maybe_transform_and_forward_to_value_deserializer!(self, deserialize_any, visitor);
+
+        // Getting to this point means the transformer does not change _this
+        // particular value_. But if this value is a container, we still must
+        // not short-circuit: the transformer must get a chance at the
+        // elements.
+        if super::is_deserializing_value()
+            && (self.value.is_scalar()
+                || self.field_transformer.is_none()
+                || !crate::verbatim::should_transform_any())
+        {
             // SAFETY: self.unused_key_callback and self.field_transformer are
             // passed in from outside and guaranteed to be valid for 'de
             unsafe {
@@ -444,7 +454,6 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
             }
             return Err(Error::custom("Value deserialized via fast path"));
         }
-        maybe_transform_and_forward_to_value_deserializer!(self, deserialize_any, visitor);
 
         maybe_why_not!(
             self.value,
@@ -454,9 +463,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                 Value::Number(n, ..) => n.deserialize_any(visitor),
                 Value::String(v, ..) => visitor.visit_borrowed_str(v),
                 #[cfg(feature = "yaml_11")]
-                Value::Timestamp(t, ..) => {
-                    visitor.visit_map(crate::timestamp::TimestampFields::new(*t))
-                }
+                Value::Timestamp(t, ..) => visitor.visit_string(t.to_string()),
                 Value::Sequence(v, ..) => visit_sequence_ref(
                     v,
                     self.path,

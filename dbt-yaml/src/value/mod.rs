@@ -556,6 +556,27 @@ impl Value {
         }
     }
 
+    /// Returns true if the `Value` represents a scalar value; returns false
+    /// otherwise.
+    ///
+    /// A "scalar" `Value` is one that can not recursively contain `Value`
+    /// objects. Basically any value other than a sequence or mapping.
+    ///
+    /// ```
+    /// # use dbt_yaml::Value;
+    /// let v: Value = dbt_yaml::from_str("[1, 2, 3]").unwrap();
+    /// assert!(!v.is_scalar());
+    ///
+    /// let v: Value = dbt_yaml::from_str("false").unwrap();
+    /// assert!(v.is_scalar());
+    /// ```
+    pub fn is_scalar(&self) -> bool {
+        match self {
+            Value::Mapping(..) | Value::Sequence(..) | Value::Tagged(..) => false,
+            _ => true,
+        }
+    }
+
     /// Returns true if the `Value` is a sequence. Returns false otherwise.
     ///
     /// ```
