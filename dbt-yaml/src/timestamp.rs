@@ -34,9 +34,11 @@ pub(crate) const FIELDS: &[&str] = &["year", "month", "day", "time", "tz_minutes
 /// `2001-12-15 00:00:00 Z`, compare equal.
 ///
 /// The [Display] implementation emits a canonicalized format: `YYYY-MM-DD` for
-/// date-only values and `YYYY-MM-DD HH:MM:SS[.ffffff]` otherwise, with the zone
-/// suffix as specified: nothing when omitted, `Z` for a zero offset and
-/// `±HH:MM` otherwise.
+/// date-only values and `YYYY-MM-DD HH:MM:SS[.fffffffff]` otherwise, with the
+/// fractional second given at 3, 6 or 9 digits as its precision requires, and
+/// the zone suffix as specified: nothing when omitted, `Z` for a zero offset
+/// and `±HH:MM` otherwise. The canonical form preserves nanosecond precision,
+/// so a `Timestamp` round-trips through `Display` and [`Timestamp::parse`].
 ///
 /// ```
 /// # use dbt_yaml::{TimeOfDay, Timestamp};
@@ -116,8 +118,8 @@ impl Timestamp {
     /// ranges, since only real dates denote an instant. The zone offset is
     /// only checked against the grammar, not for plausibility.
     ///
-    /// The fractional second is truncated to microsecond precision, matching
-    /// the canonical [`Display`] form.
+    /// The fractional second is kept to nanosecond precision; digits beyond
+    /// the ninth are truncated.
     pub fn parse(input: &str) -> Option<Timestamp> {
         let bytes = input.as_bytes();
         let mut pos = 0;
@@ -158,13 +160,13 @@ impl Timestamp {
             pos += 1;
             let mut digits = 0;
             while let Some(digit) = bytes.get(pos).filter(|b| b.is_ascii_digit()) {
-                if digits < 6 {
+                if digits < 9 {
                     nanos = nanos * 10 + u32::from(*digit - b'0');
                     digits += 1;
                 }
                 pos += 1;
             }
-            nanos *= 10u32.pow(6 - digits) * 1000;
+            nanos *= 10u32.pow(9 - digits);
         }
 
         skip_whitespace(bytes, &mut pos);
@@ -286,9 +288,19 @@ impl Display for Timestamp {
             " {:02}:{:02}:{:02}",
             time.hour, time.minute, time.second
         )?;
-        let micros = time.nanosecond / 1000;
-        if micros != 0 {
-            write!(formatter, ".{:06}", micros)?;
+        if time.nanosecond != 0 {
+            // Use the smallest of 3, 6 or 9 fraction digits that keeps full
+            // precision, so the width shows whether the value has milli-,
+            // micro- or nanosecond precision.
+            let width = if time.nanosecond % 1_000_000 == 0 {
+                3
+            } else if time.nanosecond % 1_000 == 0 {
+                6
+            } else {
+                9
+            };
+            let fraction = time.nanosecond / 10u32.pow(9 - width);
+            write!(formatter, ".{:01$}", fraction, width as usize)?;
         }
         match self.tz_minutes {
             None => {}
@@ -945,7 +957,34 @@ mod tests {
                 None
             )
             .to_string(),
-            "2001-12-15 02:59:43.100000"
+            "2001-12-15 02:59:43.100"
+        );
+        // The fraction width reflects the precision: 3, 6 or 9 digits.
+        assert_eq!(
+            ts(
+                2001,
+                12,
+                15,
+                Some(TimeOfDay::new(2, 59, 43, 1_000_000)),
+                None
+            )
+            .to_string(),
+            "2001-12-15 02:59:43.001"
+        );
+        assert_eq!(
+            ts(
+                2001,
+                12,
+                15,
+                Some(TimeOfDay::new(2, 59, 43, 123_456_000)),
+                None
+            )
+            .to_string(),
+            "2001-12-15 02:59:43.123456"
+        );
+        assert_eq!(
+            ts(2001, 12, 15, Some(TimeOfDay::new(2, 59, 43, 1)), None).to_string(),
+            "2001-12-15 02:59:43.000000001"
         );
         assert_eq!(
             ts(2001, 12, 15, Some(TimeOfDay::new(2, 59, 43, 0)), Some(0)).to_string(),
@@ -974,7 +1013,8 @@ mod tests {
             .to_string(),
             "2001-12-15 02:30:00+05:30"
         );
-        // Timestamps denoting the same instant can display differently.
+        // Two syntactically different Timestamps could denote the same semantic
+        // instant:
         let a = ts(2001, 12, 15, Some(TimeOfDay::new(2, 0, 0, 0)), Some(2 * 60));
         let b = ts(2001, 12, 15, Some(TimeOfDay::new(0, 0, 0, 0)), Some(0));
         assert_eq!(a, b);
@@ -1033,14 +1073,15 @@ mod tests {
             Timestamp::parse("2001-2-4 2:59:43"),
             Some(ts(2001, 2, 4, Some(TimeOfDay::new(2, 59, 43, 0)), None))
         );
-        // A zone minute is optional; extra fraction digits are truncated.
+        // A zone minute is optional; fraction digits beyond the ninth are
+        // truncated.
         assert_eq!(
-            Timestamp::parse("2001-12-15 02:59:43.123456789 +05:30"),
+            Timestamp::parse("2001-12-15 02:59:43.1234567894 +05:30"),
             Some(ts(
                 2001,
                 12,
                 15,
-                Some(TimeOfDay::new(2, 59, 43, 123_456_000)),
+                Some(TimeOfDay::new(2, 59, 43, 123_456_789)),
                 Some(330)
             ))
         );
@@ -1050,6 +1091,35 @@ mod tests {
         let c = Timestamp::parse("2001-12-14 21:59:43.10 -5").unwrap();
         let d = Timestamp::parse("2001-12-15 2:59:43.10").unwrap();
         assert!(a == b && b == c && c == d);
+    }
+
+    #[test]
+    fn display_round_trips_through_parse() {
+        for timestamp in [
+            ts(2001, 12, 15, None, None),
+            ts(2001, 12, 15, Some(TimeOfDay::new(0, 0, 0, 0)), Some(0)),
+            ts(2001, 12, 15, Some(TimeOfDay::new(2, 59, 43, 1)), None),
+            ts(
+                2001,
+                12,
+                15,
+                Some(TimeOfDay::new(2, 59, 43, 123_456_789)),
+                Some(330),
+            ),
+            ts(
+                2001,
+                12,
+                14,
+                Some(TimeOfDay::new(21, 59, 43, 999_999_999)),
+                Some(-300),
+            ),
+        ] {
+            let string = timestamp.to_string();
+            let parsed = Timestamp::parse(&string).expect(string.as_str());
+            assert_eq!(parsed, timestamp);
+            // The canonical form should be stable:
+            assert_eq!(parsed.to_string(), string);
+        }
     }
 
     #[test]

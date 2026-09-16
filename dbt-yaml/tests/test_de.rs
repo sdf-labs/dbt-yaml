@@ -866,11 +866,11 @@ mod yaml_11_timestamps {
     #[test]
     fn test_timestamp_grammar_details() {
         // One-digit month/day/hour in the date-time form, optional zone
-        // minutes, fraction truncated to microseconds.
+        // minutes, full nanosecond fraction.
         let value = dbt_yaml::from_str::<Value>("2001-2-4 2:59:43.123456789 +5").unwrap();
         assert_eq!(
             value,
-            ts(2001, 2, 4, Some((2, 59, 43, 123_456_000)), Some(300))
+            ts(2001, 2, 4, Some((2, 59, 43, 123_456_789)), Some(300))
         );
     }
 
@@ -901,7 +901,7 @@ mod yaml_11_timestamps {
     fn test_timestamp_round_trip() {
         let value = dbt_yaml::from_str::<Value>("d: 2001-12-14t21:59:43.10-05:00\n").unwrap();
         let yaml = dbt_yaml::to_string(&value).unwrap();
-        assert_eq!(yaml, "d: 2001-12-14 21:59:43.100000-05:00\n");
+        assert_eq!(yaml, "d: 2001-12-14 21:59:43.100-05:00\n");
         let reparsed = dbt_yaml::from_str::<Value>(&yaml).unwrap();
         assert_eq!(value, reparsed);
         assert!(reparsed["d"].is_timestamp());
@@ -968,7 +968,7 @@ mod yaml_11_timestamps {
                     Some(0)
                 ),
                 updated: Some(Timestamp::new(2002, 12, 14, None, None)),
-                created_str: "2001-12-15 02:59:43.100000Z".to_string(),
+                created_str: "2001-12-15 02:59:43.100Z".to_string(),
                 updated_str: Some("2002-12-14".to_string()),
             }
         );
@@ -981,7 +981,7 @@ mod yaml_11_timestamps {
 
         let value = dbt_yaml::from_str::<Value>("2001-12-15T02:59:43.1Z").unwrap();
         let string: String = dbt_yaml::from_value(value.clone()).unwrap();
-        assert_eq!(string, "2001-12-15 02:59:43.100000Z");
+        assert_eq!(string, "2001-12-15 02:59:43.100Z");
         // ...or as a Timestamp to timestamp-typed fields.
         let timestamp: Timestamp = dbt_yaml::from_value(value).unwrap();
         assert_eq!(timestamp, config.created);
@@ -1136,7 +1136,7 @@ mod yaml_11_timestamps {
         assert_eq!(parsed, timestamp);
         // ...while string-typed targets still receive the canonical form.
         let string: String = dbt_yaml::from_value(value).unwrap();
-        assert_eq!(string, "2001-12-15 02:59:43.100000-05:00");
+        assert_eq!(string, "2001-12-15 02:59:43.100-05:00");
 
         // A zone without a time-of-day has no place in the component payload
         // and, like Display, does not survive serialization.
