@@ -113,10 +113,10 @@ impl Timestamp {
 
     /// Parses a YAML 1.1 timestamp scalar, following the grammar in
     /// <https://yaml.org/type/timestamp.html>. Returns `None` if the scalar
-    /// does not match the grammar, or if the date or time-of-day is out of
-    /// range on the calendar: unlike [`Timestamp::new`], parsing validates
-    /// ranges, since only real dates denote an instant. The zone offset is
-    /// only checked against the grammar, not for plausibility.
+    /// does not match the grammar. Components are not range-checked: like
+    /// [`Timestamp::new`], parsing stores out-of-range components as given,
+    /// and it is up to the consumer to reject them. This also means every
+    /// parsed `Timestamp` round-trips through [`Display`] and back.
     ///
     /// The fractional second is kept to nanosecond precision; digits beyond
     /// the ninth are truncated.
@@ -136,7 +136,7 @@ impl Timestamp {
 
         if pos == bytes.len() {
             // The date-only form requires two-digit month and day.
-            if month_width == 2 && day_width == 2 && valid_date(year, month, day) {
+            if month_width == 2 && day_width == 2 {
                 return Some(Timestamp::new(year, month as u8, day as u8, None, None));
             }
             return None;
@@ -197,9 +197,6 @@ impl Timestamp {
             return None;
         }
 
-        if !valid_date(year, month, day) || hour > 23 || minute > 59 || second > 59 {
-            return None;
-        }
         Some(Timestamp::new(
             year,
             month as u8,
@@ -367,25 +364,6 @@ fn skip_whitespace(bytes: &[u8], pos: &mut usize) {
     while matches!(bytes.get(*pos), Some(b' ' | b'\t')) {
         *pos += 1;
     }
-}
-
-fn valid_date(year: i32, month: u32, day: u32) -> bool {
-    (1..=12).contains(&month) && (1..=days_in_month(year, month)).contains(&day)
-}
-
-/// Length of a month in the proleptic Gregorian calendar. `month` must be in
-/// 1..=12.
-fn days_in_month(year: i32, month: u32) -> u32 {
-    match month {
-        2 if is_leap_year(year) => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    }
-}
-
-fn is_leap_year(year: i32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
 /// Generates the trait methods that [`ExtractString`] rejects.
@@ -1123,6 +1101,31 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_out_of_range_components() {
+        // Components are grammar-checked only; out-of-range values are
+        // stored as given, so they round-trip through the canonical form.
+        for (input, timestamp) in [
+            ("2001-13-01", ts(2001, 13, 1, None, None)),
+            ("2001-00-01", ts(2001, 0, 1, None, None)),
+            ("2001-02-29", ts(2001, 2, 29, None, None)),
+            ("2000-02-30", ts(2000, 2, 30, None, None)),
+            ("2001-04-31", ts(2001, 4, 31, None, None)),
+            (
+                "2001-12-15T24:00:00",
+                ts(2001, 12, 15, Some(TimeOfDay::new(24, 0, 0, 0)), None),
+            ),
+            (
+                "2001-12-15 02:60:61 +25:99",
+                ts(2001, 12, 15, Some(TimeOfDay::new(2, 60, 61, 0)), Some(1599)),
+            ),
+        ] {
+            let parsed = Timestamp::parse(input).expect(input);
+            assert_eq!(parsed, timestamp, "{input:?}");
+            assert_eq!(Timestamp::parse(&parsed.to_string()), Some(parsed));
+        }
+    }
+
+    #[test]
     fn parse_rejects_non_timestamps() {
         for input in [
             "",
@@ -1131,15 +1134,6 @@ mod tests {
             // One-digit month or day in the date-only form.
             "2001-2-15",
             "2001-12-5",
-            // Out of range on the calendar.
-            "2001-13-01",
-            "2001-00-01",
-            "2001-02-29",
-            "2000-02-30",
-            "2001-04-31",
-            "2001-12-15T24:00:00",
-            "2001-12-15T02:60:00",
-            "2001-12-15T02:59:60",
             // Grammar violations.
             "2001-12-15 2:59:43UTC",
             "2001-12-15 2:59:43 z",

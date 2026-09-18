@@ -876,12 +876,9 @@ mod yaml_11_timestamps {
 
     #[test]
     fn test_timestamp_resolution_rejects() {
-        // Out-of-range or non-matching scalars stay strings.
+        // Scalars that do not match the grammar stay strings.
         for yaml in [
             "2001-2-15", // the date-only form requires two-digit month and day
-            "2001-13-01",
-            "2001-02-29", // not a leap year
-            "2001-12-15T24:00:00",
             "2001-12-15 2:59",
             "2001-12",
         ] {
@@ -895,6 +892,29 @@ mod yaml_11_timestamps {
         // Quoted scalars never resolve.
         let value = dbt_yaml::from_str::<Value>("\"2001-12-15\"").unwrap();
         assert_eq!(value, Value::string("2001-12-15".to_owned()));
+    }
+
+    #[test]
+    fn test_timestamp_resolution_out_of_range() {
+        // Components are grammar-checked only; scalars with out-of-range
+        // components still resolve to timestamps, which round-trip
+        // unchanged. Semantic validation is left to the consumer.
+        for (yaml, canonical, timestamp) in [
+            ("2001-13-01", "2001-13-01", ts(2001, 13, 1, None, None)),
+            ("2001-02-29", "2001-02-29", ts(2001, 2, 29, None, None)),
+            (
+                "2001-12-15T24:00:00",
+                "2001-12-15 24:00:00",
+                ts(2001, 12, 15, Some((24, 0, 0, 0)), None),
+            ),
+        ] {
+            let value = dbt_yaml::from_str::<Value>(yaml).unwrap();
+            assert_eq!(value, timestamp, "{yaml:?}");
+            let serialized = dbt_yaml::to_string(&value).unwrap();
+            assert_eq!(serialized.trim(), canonical);
+            let reparsed = dbt_yaml::from_str::<Value>(&serialized).unwrap();
+            assert_eq!(reparsed, value);
+        }
     }
 
     #[test]
