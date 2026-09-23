@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use dbt_yaml::{Value, Verbatim};
+use dbt_yaml::{Timestamp, Value, Verbatim};
 use indexmap::IndexMap;
 use indoc::indoc;
 use std::collections::HashMap;
@@ -17,6 +17,7 @@ struct BasicStruct {
     #[schemars(skip_serializing_if = "Option::is_none")]
     d: Option<String>,
     e: IndexMap<String, String>,
+    f: Option<Timestamp>,
 }
 
 #[derive(JsonSchema)]
@@ -66,6 +67,12 @@ fn test_struct_derive_jsonschema() {
       "additionalProperties": {
         "type": "string"
       }
+    },
+    "f": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   }
 }"#}
@@ -181,6 +188,12 @@ fn test_enum_derive_jsonschema() {
           "additionalProperties": {
             "type": "string"
           }
+        },
+        "f": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     }
@@ -296,6 +309,12 @@ fn test_dunder_field_struct_with_flatten_derive_jsonschema() {
       "additionalProperties": {
         "type": "string"
       }
+    },
+    "f": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   }
 }"#}
