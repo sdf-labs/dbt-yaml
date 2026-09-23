@@ -27,5 +27,5 @@ pretty_assertions = "1.2.1"
 schemars = { version = "0.8", features = ["indexmap2"] }
 serde_json = "1.0.149"
 indoc = "2.0"
-dbt-yaml = { path = "../dbt-yaml", features = ["schemars"] }
+dbt-yaml = { path = "../dbt-yaml", features = ["schemars", "yaml_11"] }
 indexmap = { version = "2.12", features = ["serde"] }

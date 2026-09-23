@@ -864,6 +864,24 @@ fn unsupported_payload() -> crate::Error {
     <crate::Error as ser::Error>::custom("expected a timestamp string")
 }
 
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for Timestamp {
+    fn schema_name() -> String {
+        "Timestamp".into()
+    }
+
+    /// A timestamp serializes as a plain string scalar, so its schema is a
+    /// string schema. Technically, we could further restrict the schema by
+    /// specifying `format`, but it's probably not worth the complexity.
+    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        String::json_schema(generator)
+    }
+
+    fn is_referenceable() -> bool {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
