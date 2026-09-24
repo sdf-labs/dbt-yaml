@@ -1365,9 +1365,9 @@ mod timestamp {
     fn serde_boundary_delivers_string() {
         let v = ts(2001, 12, 15, Some(TimeOfDay::new(2, 59, 43, 0)), None);
         let s: String = dbt_yaml::from_value(v.clone()).unwrap();
-        assert_eq!(s, "2001-12-15 02:59:43");
+        assert_eq!(s, "2001-12-15T02:59:43");
 
         let yaml = dbt_yaml::to_string(&v).unwrap();
-        assert_eq!(yaml, "2001-12-15 02:59:43\n");
+        assert_eq!(yaml, "2001-12-15T02:59:43\n");
     }
 }
