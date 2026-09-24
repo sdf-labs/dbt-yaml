@@ -178,6 +178,20 @@ impl Mapping {
         self.map.is_empty()
     }
 
+    /// Returns `true` if `self` and `other` contain the same keys under
+    /// strict equality, with values equal under [`Value::lenient_eq`].
+    /// Entries are matched by hash lookup, without regard to order.
+    ///
+    /// Keys are compared strictly because a mapping may hold keys that are
+    /// leniently equal but strictly distinct (a timestamp and a string for
+    /// the same instant); matching keys leniently would be ambiguous.
+    pub fn lenient_eq(&self, other: &Mapping) -> bool {
+        self.len() == other.len()
+            && self.iter().all(|(key, value)| {
+                other.map.get(key).is_some_and(|v| value.lenient_eq(v))
+            })
+    }
+
     /// Clears the map of all key-value pairs.
     #[inline]
     pub fn clear(&mut self) {

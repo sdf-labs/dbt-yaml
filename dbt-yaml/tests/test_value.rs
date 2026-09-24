@@ -1295,6 +1295,71 @@ mod timestamp {
         let same_instant = ts(2001, 12, 15, Some(TimeOfDay::new(0, 0, 0, 0)), None);
         assert_eq!(mapping.get(&same_instant), Some(&Value::bool(true)));
     }
+    #[test]
+    fn lenient_eq_matches_timestamp_against_string() {
+        let midnight = ts(2001, 12, 15, None, None);
+        let string = Value::string("2001-12-15".to_string());
+        let offset = ts(
+            2001,
+            12,
+            15,
+            Some(TimeOfDay::new(2, 0, 0, 0)),
+            Some(2 * 60),
+        );
+
+        // Strict equality keeps Timestamp distinct from String...
+        assert_ne!(midnight, string);
+
+        // ...while lenient equality compares the normalized instant.
+        assert!(midnight.lenient_eq(&string));
+        assert!(string.lenient_eq(&midnight));
+        assert!(string.lenient_eq(&offset));
+        assert!(midnight.lenient_eq(&offset));
+
+        assert!(!midnight.lenient_eq(&Value::string("2001-12-16".to_string())));
+        assert!(!midnight.lenient_eq(&Value::string("not a timestamp".to_string())));
+        assert!(!midnight.lenient_eq(&Value::null()));
+    }
+
+    #[test]
+    fn lenient_eq_recurses_into_sequences_and_mappings() {
+        use dbt_yaml::Mapping;
+
+        let mut typed = Mapping::new();
+        typed.insert(
+            Value::string("created".to_string()),
+            Value::sequence(vec![ts(2001, 12, 15, None, None)]),
+        );
+        let mut stringy = Mapping::new();
+        stringy.insert(
+            Value::string("created".to_string()),
+            Value::sequence(vec![Value::string("2001-12-15".to_string())]),
+        );
+
+        let typed = Value::mapping(typed);
+        let stringy = Value::mapping(stringy);
+
+        assert_ne!(typed, stringy);
+        assert!(typed.lenient_eq(&stringy));
+        assert!(stringy.lenient_eq(&typed));
+    }
+
+    #[test]
+    fn lenient_eq_compares_mapping_keys_strictly() {
+        use dbt_yaml::Mapping;
+
+        let mut typed = Mapping::new();
+        typed.insert(ts(2001, 12, 15, None, None), Value::bool(true));
+        let mut stringy = Mapping::new();
+        stringy.insert(Value::string("2001-12-15".to_string()), Value::bool(true));
+
+        let typed = Value::mapping(typed);
+        let stringy = Value::mapping(stringy);
+
+        assert!(!typed.lenient_eq(&stringy));
+        assert!(!stringy.lenient_eq(&typed));
+    }
+
 
     #[test]
     fn serde_boundary_delivers_string() {

@@ -75,6 +75,57 @@ impl PartialEq for Value {
     }
 }
 
+impl Value {
+    /// Returns `true` if `self` and `other` represent the same YAML data
+    /// under a lenient notion of equality.
+    ///
+    /// Unlike [`PartialEq`], which requires matching variants, this
+    /// comparison treats a `Value::Timestamp` as equal to a
+    /// [`Value::String`] whose contents parse as a YAML 1.1 timestamp for
+    /// the same normalized instant. Sequences, mappings and tagged values
+    /// are compared recursively; mapping entries are matched without regard
+    /// to order, with keys compared strictly and values compared leniently.
+    ///
+    /// This is a standalone comparison: it does not affect [`PartialEq`],
+    /// [`PartialOrd`] or [`Hash`], which keep their strict typed semantics.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "yaml_11")] {
+    /// use dbt_yaml::Value;
+    ///
+    /// let timestamp = dbt_yaml::from_str::<Value>("2001-12-15 00:00:00Z").unwrap();
+    /// let string = dbt_yaml::from_str::<Value>("\"2001-12-15\"").unwrap();
+    ///
+    /// assert_ne!(timestamp, string);
+    /// assert!(timestamp.lenient_eq(&string));
+    /// # }
+    /// ```
+    pub fn lenient_eq(&self, other: &Value) -> bool {
+        match (self, other) {
+            (Value::Null(..), Value::Null(..)) => true,
+            (Value::Bool(a, ..), Value::Bool(b, ..)) => a == b,
+            (Value::Number(a, ..), Value::Number(b, ..)) => a == b,
+            (Value::String(a, ..), Value::String(b, ..)) => a == b,
+            #[cfg(feature = "yaml_11")]
+            (Value::Timestamp(a, ..), Value::Timestamp(b, ..)) => a == b,
+            #[cfg(feature = "yaml_11")]
+            (Value::Timestamp(a, ..), Value::String(b, ..))
+            | (Value::String(b, ..), Value::Timestamp(a, ..)) => a == b.as_str(),
+            (Value::Sequence(a, ..), Value::Sequence(b, ..)) => {
+                a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.lenient_eq(b))
+            }
+            (Value::Mapping(a, ..), Value::Mapping(b, ..)) => a.lenient_eq(b),
+            (Value::Tagged(a, ..), Value::Tagged(b, ..)) => {
+                a.tag == b.tag && a.value.lenient_eq(&b.value)
+            }
+            _ => false,
+        }
+    }
+}
+
+
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Value) -> Option<std::cmp::Ordering> {
         match (self, other) {

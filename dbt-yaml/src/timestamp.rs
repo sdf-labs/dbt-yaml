@@ -33,6 +33,15 @@ pub(crate) const FIELDS: &[&str] = &["year", "month", "day", "time", "tz_minutes
 /// different spellings of the same instant, such as `2001-12-15` and
 /// `2001-12-15 00:00:00 Z`, compare equal.
 ///
+/// A `Timestamp` also compares equal to strings that parse as a timestamp
+/// for the same normalized instant: [`str`], `&str` and [`String`] are
+/// supported in either operand order, and strings that do not parse are
+/// never equal. Note that [`Value`](crate::Value) does not use this
+/// comparison — its [`PartialEq`](crate::Value#impl-PartialEq-for-Value)
+/// keeps timestamps strictly distinct from strings, and the lenient
+/// comparison is available on `Value` only through
+/// [`Value::lenient_eq`](crate::Value::lenient_eq).
+///
 /// The [Display] implementation emits a canonicalized format: `YYYY-MM-DD` for
 /// date-only values and `YYYY-MM-DD HH:MM:SS[.fffffffff]` otherwise, with the
 /// fractional second given at 3, 6 or 9 digits as its precision requires, and
@@ -47,6 +56,8 @@ pub(crate) const FIELDS: &[&str] = &["year", "month", "day", "time", "tz_minutes
 /// assert_eq!(date, midnight);
 /// assert_eq!(date.to_string(), "2001-12-15");
 /// assert_eq!(midnight.to_string(), "2001-12-15 00:00:00Z");
+/// assert_eq!(date, "2001-12-15");
+/// assert_eq!("2001-12-15T02:00:00+02:00", date);
 /// ```
 #[derive(Clone, Copy)]
 pub struct Timestamp {
@@ -251,6 +262,48 @@ impl PartialEq for Timestamp {
 }
 
 impl Eq for Timestamp {}
+
+/// Semantic equality with strings.
+///
+/// A timestamp compares equal to a string if the string parses as a YAML 1.1
+/// timestamp for the same instant, matching the normalization rules of
+/// [`Timestamp`]'s own [`PartialEq`]. Strings that do not parse are never
+/// equal.
+impl PartialEq<str> for Timestamp {
+    fn eq(&self, other: &str) -> bool {
+        Timestamp::parse(other).is_some_and(|parsed| parsed == *self)
+    }
+}
+
+impl PartialEq<&str> for Timestamp {
+    fn eq(&self, other: &&str) -> bool {
+        self == *other
+    }
+}
+
+impl PartialEq<String> for Timestamp {
+    fn eq(&self, other: &String) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl PartialEq<Timestamp> for str {
+    fn eq(&self, other: &Timestamp) -> bool {
+        other == self
+    }
+}
+
+impl PartialEq<Timestamp> for &str {
+    fn eq(&self, other: &Timestamp) -> bool {
+        other == *self
+    }
+}
+
+impl PartialEq<Timestamp> for String {
+    fn eq(&self, other: &Timestamp) -> bool {
+        other == self.as_str()
+    }
+}
 
 impl PartialOrd for Timestamp {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -904,6 +957,20 @@ mod tests {
         assert_eq!(date, midnight_naive);
         assert_eq!(date, midnight_zulu);
         assert_eq!(date.cmp(&midnight_zulu), Ordering::Equal);
+    }
+
+    #[test]
+    fn compares_equal_to_timestamp_strings() {
+        let zulu = ts(2001, 12, 15, Some(TimeOfDay::new(0, 0, 0, 0)), Some(0));
+        assert_eq!(zulu, "2001-12-15");
+        assert_eq!(zulu, "2001-12-15 00:00:00Z");
+        assert_eq!(zulu, "2001-12-15T02:00:00+02:00");
+        assert_eq!(zulu, String::from("2001-12-15"));
+        assert_eq!("2001-12-15", zulu);
+        assert_eq!(String::from("2001-12-15"), zulu);
+        assert_ne!(zulu, "2001-12-16");
+        assert_ne!(zulu, "not a timestamp");
+        assert_ne!("not a timestamp", zulu);
     }
 
     #[test]
