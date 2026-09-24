@@ -16,7 +16,7 @@ pub fn main() {
                 xxx: yyy  # should warn about unused key
     "#};
 
-    let value: dbt_yaml::Value = dbt_yaml::from_str(&yaml).unwrap();
+    let value: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
     // for model in value.get("models").unwrap().as_sequence().unwrap() {
     //     println!(
     //         "Name: {:?}, Description: {:?}, config: {:#?}",
