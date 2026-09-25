@@ -14,6 +14,7 @@ use crate::Timestamp;
 use crate::{spanned, Span};
 use serde::de::{Deserialize, DeserializeOwned, IntoDeserializer};
 use serde::Serialize;
+use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 use std::mem;
 
@@ -628,6 +629,47 @@ impl Value {
         }
     }
 
+
+    /// If the `Value` is a scalar, returns a string form of the scalar.
+    /// Returns None otherwise.
+    ///
+    /// A "scalar" `Value` is anything other than a sequence, mapping, or
+    /// tagged value; [`is_scalar`](Value::is_scalar) returns true for exactly
+    /// the values for which this method returns `Some`.
+    ///
+    /// Strings are returned as-is (borrowed); nulls, booleans, numbers, and
+    /// timestamps are rendered in their canonical form (`"null"`, `"true"`,
+    /// `"1.5"`, `"2001-12-15"`, ...).
+    ///
+    /// Note that the string form is not a YAML serialization: a string
+    /// scalar is returned without quotes, so it does not necessarily parse
+    /// back as a string.
+    ///
+    /// ```
+    /// # use dbt_yaml::Value;
+    /// let v: Value = dbt_yaml::from_str("1.5").unwrap();
+    /// assert_eq!(v.as_scalar_string().as_deref(), Some("1.5"));
+    ///
+    /// let v: Value = dbt_yaml::from_str("'lorem ipsum'").unwrap();
+    /// assert_eq!(v.as_scalar_string().as_deref(), Some("lorem ipsum"));
+    ///
+    /// let v: Value = dbt_yaml::from_str("null").unwrap();
+    /// assert_eq!(v.as_scalar_string().as_deref(), Some("null"));
+    ///
+    /// let v: Value = dbt_yaml::from_str("[1, 2]").unwrap();
+    /// assert_eq!(v.as_scalar_string(), None);
+    /// ```
+    pub fn as_scalar_string(&self) -> Option<Cow<'_, str>> {
+        match self {
+            Value::Null(..) => Some(Cow::Borrowed("null")),
+            Value::Bool(b, ..) => Some(Cow::Borrowed(if *b { "true" } else { "false" })),
+            Value::Number(n, ..) => Some(Cow::Owned(n.to_string())),
+            Value::String(s, ..) => Some(Cow::Borrowed(s)),
+            #[cfg(feature = "yaml_11")]
+            Value::Timestamp(t, ..) => Some(Cow::Owned(t.to_string())),
+            Value::Sequence(..) | Value::Mapping(..) | Value::Tagged(..) => None,
+        }
+    }
     /// Returns true if the `Value` is a sequence. Returns false otherwise.
     ///
     /// ```
