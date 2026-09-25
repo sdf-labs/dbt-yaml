@@ -33,21 +33,22 @@ pub(crate) const FIELDS: &[&str] = &["year", "month", "day", "time", "tz_minutes
 /// different spellings of the same instant, such as `2001-12-15` and
 /// `2001-12-15 00:00:00 Z`, compare equal.
 ///
-/// A `Timestamp` also compares equal to strings that parse as a timestamp
-/// for the same normalized instant: [`str`], `&str` and [`String`] are
-/// supported in either operand order, and strings that do not parse are
-/// never equal. Note that [`Value`](crate::Value) does not use this
-/// comparison — its [`PartialEq`](crate::Value#impl-PartialEq-for-Value)
-/// keeps timestamps strictly distinct from strings, and the lenient
-/// comparison is available on `Value` only through
-/// [`Value::lenient_eq`](crate::Value::lenient_eq).
+/// A `Timestamp` also compares equal to strings that parse as a timestamp for
+/// the same normalized instant: [`str`], `&str` and [`String`] are supported in
+/// either operand order, and strings that do not parse are never equal. Note
+/// that [`Value`](crate::Value) does not use this comparison — its
+/// [`PartialEq`](crate::Value#impl-PartialEq-for-Value) keeps timestamps
+/// strictly distinct from strings. Lenient comparison is available on `Value`
+/// through the explicit [`Value::lenient_eq`](crate::Value::lenient_eq) method.
 ///
 /// The [Display] implementation emits a canonicalized format: `YYYY-MM-DD` for
-/// date-only values and `YYYY-MM-DD HH:MM:SS[.fffffffff]` otherwise, with the
-/// fractional second given at 3, 6 or 9 digits as its precision requires, and
-/// the zone suffix as specified: nothing when omitted, `Z` for a zero offset
-/// and `±HH:MM` otherwise. The canonical form preserves nanosecond precision,
-/// so a `Timestamp` round-trips through `Display` and [`Timestamp::parse`].
+/// date-only values and `YYYY-MM-DDTHH:MM:SS[.fffffffff]` otherwise, using the
+/// RFC-3339 / ISO-8601 `T` separator, which the YAML 1.1 timestamp grammar
+/// allows alongside whitespace. The fractional second is given at 3, 6 or 9
+/// digits as its precision requires, and the zone suffix as specified: nothing
+/// when omitted, `Z` for a zero offset and `±HH:MM` otherwise. The canonical
+/// form preserves nanosecond precision, so a `Timestamp` round-trips through
+/// `Display` and [`Timestamp::parse`].
 ///
 /// ```
 /// # use dbt_yaml::{TimeOfDay, Timestamp};
@@ -55,9 +56,9 @@ pub(crate) const FIELDS: &[&str] = &["year", "month", "day", "time", "tz_minutes
 /// let midnight = Timestamp::new(2001, 12, 15, Some(TimeOfDay::new(0, 0, 0, 0)), Some(0));
 /// assert_eq!(date, midnight);
 /// assert_eq!(date.to_string(), "2001-12-15");
-/// assert_eq!(midnight.to_string(), "2001-12-15 00:00:00Z");
+/// assert_eq!(midnight.to_string(), "2001-12-15T00:00:00Z");
 /// assert_eq!(date, "2001-12-15");
-/// assert_eq!("2001-12-15T02:00:00+02:00", date);
+/// assert_eq!("2001-12-15 02:00:00+02:00", date);
 /// ```
 #[derive(Clone, Copy)]
 pub struct Timestamp {
@@ -243,21 +244,53 @@ impl Timestamp {
         self.tz_minutes
     }
 
-    /// The instant as (minutes since the Unix epoch in UTC, second,
-    /// nanosecond), applying the spec's defaults of midnight for a missing
-    /// time-of-day and UTC for a missing zone.
-    fn normalized(&self) -> (i64, u8, u32) {
+    /// True if this [`Timestamp`] is naive, i.e. it did not specify a zone
+    /// suffix.
+    pub fn is_naive(&self) -> bool {
+        self.tz_minutes.is_none()
+    }
+
+    /// The instant denoted by this [`Timestamp`] as a tuple of (minutes since
+    /// the Unix epoch in UTC, second, nanosecond), applying Yaml 1.1 spec's
+    /// defaults of midnight for a missing time-of-day and UTC for a missing
+    /// zone.
+    pub fn instant(&self) -> (i64, u8, u32) {
         let days = days_from_civil(self.year, self.month, self.day);
         let time = self.time.unwrap_or(TimeOfDay::MIDNIGHT);
         let offset = i64::from(self.tz_minutes.unwrap_or(0));
         let minutes = days * 1440 + i64::from(time.hour) * 60 + i64::from(time.minute) - offset;
         (minutes, time.second, time.nanosecond)
     }
+
+    /// Returns a [`Timestamp`] denoting the same instant as `self`, with
+    /// the spec's defaults made explicit: a missing time-of-day becomes
+    /// midnight and a missing zone becomes UTC. Components that are present
+    /// are preserved as is.
+    ///
+    /// ```
+    /// # use dbt_yaml::{TimeOfDay, Timestamp};
+    /// let date = Timestamp::new(2001, 12, 15, None, None);
+    /// let explicit = date.with_defaults();
+    /// assert_eq!(explicit.to_string(), "2001-12-15T00:00:00Z");
+    /// assert_eq!(explicit.time(), Some(TimeOfDay::new(0, 0, 0, 0)));
+    /// assert_eq!(explicit.tz_minutes(), Some(0));
+    ///
+    /// // A zone that was given is preserved, not folded into UTC.
+    /// let offset = Timestamp::new(2001, 12, 15, Some(TimeOfDay::new(2, 0, 0, 0)), Some(120));
+    /// assert_eq!(offset.with_defaults().to_string(), "2001-12-15T02:00:00+02:00");
+    /// ```
+    pub fn with_defaults(&self) -> Self {
+        Timestamp {
+            time: Some(self.time.unwrap_or(TimeOfDay::MIDNIGHT)),
+            tz_minutes: Some(self.tz_minutes.unwrap_or(0)),
+            ..*self
+        }
+    }
 }
 
 impl PartialEq for Timestamp {
     fn eq(&self, other: &Self) -> bool {
-        self.normalized() == other.normalized()
+        self.instant() == other.instant()
     }
 }
 
@@ -313,13 +346,13 @@ impl PartialOrd for Timestamp {
 
 impl Ord for Timestamp {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.normalized().cmp(&other.normalized())
+        self.instant().cmp(&other.instant())
     }
 }
 
 impl Hash for Timestamp {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.normalized().hash(state);
+        self.instant().hash(state);
     }
 }
 
@@ -333,9 +366,11 @@ impl Display for Timestamp {
         let Some(time) = self.time else {
             return Ok(());
         };
+        // Always use the RFC 3339 / ISO 8601 'T' separator, which the
+        // YAML 1.1 timestamp grammar allows alongside whitespace.
         write!(
             formatter,
-            " {:02}:{:02}:{:02}",
+            "T{:02}:{:02}:{:02}",
             time.hour, time.minute, time.second
         )?;
         if time.nanosecond != 0 {
@@ -974,6 +1009,39 @@ mod tests {
     }
 
     #[test]
+    fn with_defaults_fills_missing_components() {
+        let date = ts(2001, 12, 15, None, None);
+        let explicit = date.with_defaults();
+        assert_eq!(explicit.time(), Some(TimeOfDay::new(0, 0, 0, 0)));
+        assert_eq!(explicit.tz_minutes(), Some(0));
+        assert!(!explicit.is_date_only());
+        assert!(!explicit.is_naive());
+        assert_eq!(explicit, date);
+        assert_eq!(explicit.to_string(), "2001-12-15T00:00:00Z");
+    }
+
+    #[test]
+    fn with_defaults_preserves_existing_components() {
+        let offset = ts(
+            2001,
+            12,
+            15,
+            Some(TimeOfDay::new(2, 59, 43, 123_456_789)),
+            Some(2 * 60),
+        );
+        let explicit = offset.with_defaults();
+        assert_eq!(explicit.time(), offset.time());
+        assert_eq!(explicit.tz_minutes(), Some(2 * 60));
+        assert_eq!(explicit.to_string(), "2001-12-15T02:59:43.123456789+02:00");
+
+        // A naive time-of-day gets the default UTC zone, keeping the local
+        // time as written.
+        let naive = ts(2001, 12, 15, Some(TimeOfDay::new(2, 59, 43, 0)), None);
+        assert_eq!(naive.with_defaults().to_string(), "2001-12-15T02:59:43Z");
+    }
+
+
+    #[test]
     fn comparison_normalizes_offsets() {
         let plus_two = ts(2001, 12, 15, Some(TimeOfDay::new(2, 0, 0, 0)), Some(2 * 60));
         let zulu = ts(2001, 12, 15, Some(TimeOfDay::new(0, 0, 0, 0)), Some(0));
@@ -1009,7 +1077,7 @@ mod tests {
         assert_eq!(ts(2001, 12, 15, None, None).to_string(), "2001-12-15");
         assert_eq!(
             ts(2001, 12, 15, Some(TimeOfDay::new(2, 59, 43, 0)), None).to_string(),
-            "2001-12-15 02:59:43"
+            "2001-12-15T02:59:43"
         );
         assert_eq!(
             ts(
@@ -1020,7 +1088,7 @@ mod tests {
                 None
             )
             .to_string(),
-            "2001-12-15 02:59:43.100"
+            "2001-12-15T02:59:43.100"
         );
         // The fraction width reflects the precision: 3, 6 or 9 digits.
         assert_eq!(
@@ -1032,7 +1100,7 @@ mod tests {
                 None
             )
             .to_string(),
-            "2001-12-15 02:59:43.001"
+            "2001-12-15T02:59:43.001"
         );
         assert_eq!(
             ts(
@@ -1043,15 +1111,15 @@ mod tests {
                 None
             )
             .to_string(),
-            "2001-12-15 02:59:43.123456"
+            "2001-12-15T02:59:43.123456"
         );
         assert_eq!(
             ts(2001, 12, 15, Some(TimeOfDay::new(2, 59, 43, 1)), None).to_string(),
-            "2001-12-15 02:59:43.000000001"
+            "2001-12-15T02:59:43.000000001"
         );
         assert_eq!(
             ts(2001, 12, 15, Some(TimeOfDay::new(2, 59, 43, 0)), Some(0)).to_string(),
-            "2001-12-15 02:59:43Z"
+            "2001-12-15T02:59:43Z"
         );
         // The zone is displayed as specified; the instant is not normalized.
         assert_eq!(
@@ -1063,7 +1131,7 @@ mod tests {
                 Some(-5 * 60)
             )
             .to_string(),
-            "2001-12-15 02:59:43-05:00"
+            "2001-12-15T02:59:43-05:00"
         );
         assert_eq!(
             ts(
@@ -1074,7 +1142,7 @@ mod tests {
                 Some(5 * 60 + 30)
             )
             .to_string(),
-            "2001-12-15 02:30:00+05:30"
+            "2001-12-15T02:30:00+05:30"
         );
         // Two syntactically different Timestamps could denote the same semantic
         // instant:
