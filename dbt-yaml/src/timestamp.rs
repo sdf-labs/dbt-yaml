@@ -293,10 +293,12 @@ impl Timestamp {
     /// ends in `Z`.
     ///
     /// ```
+    /// # #[cfg(not(miri))] {
     /// # use dbt_yaml::Timestamp;
     /// let now = Timestamp::utc_now();
     /// assert_eq!(now.tz_minutes(), Some(0));
     /// assert!(!now.is_date_only());
+    /// # }
     /// ```
     pub fn utc_now() -> Timestamp {
         let duration = std::time::SystemTime::now()
@@ -1087,7 +1089,10 @@ mod tests {
         assert_eq!(naive.with_defaults().to_string(), "2001-12-15T02:59:43Z");
     }
 
+    // Miri's isolation blocks the realtime clock, so this test cannot run
+    // there.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn utc_now_is_zulu_and_close_to_system_clock() {
         let before = std::time::SystemTime::now();
         let now = Timestamp::utc_now();
@@ -1110,7 +1115,13 @@ mod tests {
     fn civil_from_days_inverts_days_from_civil() {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         assert_eq!(civil_from_days(-1), (1969, 12, 31));
-        for days in -100_000..=100_000 {
+        // Miri interprets far slower than native code, so sweep a smaller
+        // range there.
+        #[cfg(not(miri))]
+        let sweep = -100_000..=100_000;
+        #[cfg(miri)]
+        let sweep = -1_000..=1_000;
+        for days in sweep {
             let (year, month, day) = civil_from_days(days);
             assert_eq!(days_from_civil(year, month, day), days);
         }
