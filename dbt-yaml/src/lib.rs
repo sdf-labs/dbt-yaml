@@ -190,6 +190,9 @@ pub use crate::mapping::Mapping;
 #[doc(inline)]
 pub use crate::path::Path;
 
+#[doc(inline)]
+pub use crate::string_node::StringNode;
+
 mod de;
 mod error;
 mod libyaml;
@@ -200,6 +203,7 @@ pub mod path;
 mod ser;
 mod shouldbe;
 pub mod spanned;
+pub mod string_node;
 #[cfg(feature = "yaml_11")]
 mod timestamp;
 pub mod value;
