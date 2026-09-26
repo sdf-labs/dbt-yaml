@@ -187,9 +187,9 @@ impl Mapping {
     /// the same instant); matching keys leniently would be ambiguous.
     pub fn lenient_eq(&self, other: &Mapping) -> bool {
         self.len() == other.len()
-            && self.iter().all(|(key, value)| {
-                other.map.get(key).is_some_and(|v| value.lenient_eq(v))
-            })
+            && self
+                .iter()
+                .all(|(key, value)| other.map.get(key).is_some_and(|v| value.lenient_eq(v)))
     }
 
     /// Clears the map of all key-value pairs.

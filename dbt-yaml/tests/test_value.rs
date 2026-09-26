@@ -1299,13 +1299,7 @@ mod timestamp {
     fn lenient_eq_matches_timestamp_against_string() {
         let midnight = ts(2001, 12, 15, None, None);
         let string = Value::string("2001-12-15".to_string());
-        let offset = ts(
-            2001,
-            12,
-            15,
-            Some(TimeOfDay::new(2, 0, 0, 0)),
-            Some(2 * 60),
-        );
+        let offset = ts(2001, 12, 15, Some(TimeOfDay::new(2, 0, 0, 0)), Some(2 * 60));
 
         // Strict equality keeps Timestamp distinct from String...
         assert_ne!(midnight, string);
@@ -1359,7 +1353,6 @@ mod timestamp {
         assert!(!typed.lenient_eq(&stringy));
         assert!(!stringy.lenient_eq(&typed));
     }
-
 
     #[test]
     fn serde_boundary_delivers_string() {

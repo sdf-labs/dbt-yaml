@@ -1103,10 +1103,11 @@ mod tests {
         assert!(now.to_string().ends_with('Z'));
 
         let (minutes, second, nanosecond) = now.instant();
-        let micros =
-            (minutes * 60 + i64::from(second)) * 1_000_000 + i64::from(nanosecond / 1_000);
+        let micros = (minutes * 60 + i64::from(second)) * 1_000_000 + i64::from(nanosecond / 1_000);
         let to_micros = |time: std::time::SystemTime| {
-            time.duration_since(std::time::UNIX_EPOCH).unwrap().as_micros() as i64
+            time.duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros() as i64
         };
         assert!(to_micros(before) <= micros && micros <= to_micros(after));
     }
