@@ -126,7 +126,6 @@ impl Value {
     }
 }
 
-
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Value) -> Option<std::cmp::Ordering> {
         match (self, other) {
@@ -628,7 +627,6 @@ impl Value {
             _ => true,
         }
     }
-
 
     /// If the `Value` is a scalar, returns a string form of the scalar.
     /// Returns None otherwise.

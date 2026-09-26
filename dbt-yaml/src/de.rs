@@ -873,7 +873,7 @@ where
     };
     if let (Some(tag), false) = (&scalar.tag, tagged_already) {
         if tag == Tag::BOOL {
-            return match parse_bool(v) {
+            return match parse_tagged_bool(v) {
                 Some(v) => visitor.visit_bool(v),
                 None => Err(de::Error::invalid_value(Unexpected::Str(v), &"a boolean")),
             };
@@ -932,12 +932,56 @@ fn parse_null(scalar: &[u8]) -> Option<()> {
     }
 }
 
+/// Resolves an untagged plain scalar as a boolean.
+#[cfg(not(feature = "yaml_11"))]
 fn parse_bool(scalar: &str) -> Option<bool> {
     match scalar {
         "true" | "True" | "TRUE" => Some(true),
         "false" | "False" | "FALSE" => Some(false),
         _ => None,
     }
+}
+
+/// Resolves an untagged plain scalar as a boolean.
+///
+/// This method implements PyYAML's implicit boolean resolution behavior (PyYAML
+/// `resolver.py`), which differs from the YAML 1.1 spec in that it excludes the
+/// single-letter `y`/`n` abbreviations.
+#[cfg(feature = "yaml_11")]
+fn parse_bool(scalar: &str) -> Option<bool> {
+    match scalar {
+        "true" | "True" | "TRUE" | "yes" | "Yes" | "YES" | "on" | "On" | "ON" => Some(true),
+        "false" | "False" | "FALSE" | "no" | "No" | "NO" | "off" | "Off" | "OFF" => Some(false),
+        _ => None,
+    }
+}
+
+/// Parses the value of an explicitly `!!bool`-tagged scalar.
+#[cfg(not(feature = "yaml_11"))]
+fn parse_tagged_bool(scalar: &str) -> Option<bool> {
+    parse_bool(scalar)
+}
+
+/// Parses the value of an explicitly `!!bool`-tagged scalar.
+///
+/// With `yaml_11` tagged bool scalars resolve differently from untagged ones --
+/// this accepts any casing of the six boolean words, matching PyYAML's
+/// `construct_yaml_bool`, which looks up the lowercased scalar. Any other
+/// value, including `y`/`n`, is an error.
+#[cfg(feature = "yaml_11")]
+fn parse_tagged_bool(scalar: &str) -> Option<bool> {
+    const WORDS: [(&str, bool); 6] = [
+        ("true", true),
+        ("yes", true),
+        ("on", true),
+        ("false", false),
+        ("no", false),
+        ("off", false),
+    ];
+    WORDS
+        .iter()
+        .find(|(word, _)| scalar.eq_ignore_ascii_case(word))
+        .map(|&(_, value)| value)
 }
 
 #[cfg(feature = "yaml_11")]
@@ -1423,7 +1467,11 @@ impl<'de> de::Deserializer<'de> for &mut DeserializerFromEvents<'de, '_> {
                     if is_plain_or_tagged_literal_scalar(Tag::BOOL, scalar, tagged_already) =>
                 {
                     if let Ok(value) = str::from_utf8(&scalar.value) {
-                        if let Some(boolean) = parse_bool(value) {
+                        let parsed = match &scalar.tag {
+                            Some(tag) if tag == Tag::BOOL => parse_tagged_bool(value),
+                            _ => parse_bool(value),
+                        };
+                        if let Some(boolean) = parsed {
                             break visitor.visit_bool(boolean);
                         }
                     }

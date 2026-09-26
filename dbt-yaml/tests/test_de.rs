@@ -680,6 +680,19 @@ fn test_python_safe_dump() {
 
 #[test]
 fn test_tag_resolution() {
+    // With the `yaml_11` feature the YAML 1.1 words resolve as booleans,
+    // matching PyYAML's implicit resolver; without it they stay strings per the
+    // YAML 1.2 core schema.
+    #[cfg(feature = "yaml_11")]
+    fn yaml_11_bool_12_str(_s: &str, boolean: bool) -> Value {
+        Value::bool(boolean)
+    }
+
+    #[cfg(not(feature = "yaml_11"))]
+    fn yaml_11_bool_12_str(s: &str, _boolean: bool) -> Value {
+        Value::string(s.to_owned())
+    }
+
     // https://yaml.org/spec/1.2.2/#1032-tag-resolution
     let yaml = indoc! {"
         - null
@@ -725,23 +738,86 @@ fn test_tag_resolution() {
         Value::bool(false),
         Value::string("y".to_owned()),
         Value::string("Y".to_owned()),
-        Value::string("yes".to_owned()),
-        Value::string("Yes".to_owned()),
-        Value::string("YES".to_owned()),
+        yaml_11_bool_12_str("yes", true),
+        yaml_11_bool_12_str("Yes", true),
+        yaml_11_bool_12_str("YES", true),
         Value::string("n".to_owned()),
         Value::string("N".to_owned()),
-        Value::string("no".to_owned()),
-        Value::string("No".to_owned()),
-        Value::string("NO".to_owned()),
-        Value::string("on".to_owned()),
-        Value::string("On".to_owned()),
-        Value::string("ON".to_owned()),
-        Value::string("off".to_owned()),
-        Value::string("Off".to_owned()),
-        Value::string("OFF".to_owned()),
+        yaml_11_bool_12_str("no", false),
+        yaml_11_bool_12_str("No", false),
+        yaml_11_bool_12_str("NO", false),
+        yaml_11_bool_12_str("on", true),
+        yaml_11_bool_12_str("On", true),
+        yaml_11_bool_12_str("ON", true),
+        yaml_11_bool_12_str("off", false),
+        yaml_11_bool_12_str("Off", false),
+        yaml_11_bool_12_str("OFF", false),
     ];
 
     test_de(yaml, &expected);
+}
+
+#[cfg(feature = "yaml_11")]
+#[test]
+fn test_yaml11_booleans() {
+    // Matches PyYAML's implicit resolver: yes/no/on/off in three casings are
+    // resolved to booleans; the YAML 1.1 spec's single-letter y/n are kept as
+    // strings, as are mixed casings like YeS.
+    let yaml = indoc! {"
+        - yes
+        - No
+        - ON
+        - off
+        - y
+        - n
+        - YeS
+    "};
+    let expected = vec![
+        Value::bool(true),
+        Value::bool(false),
+        Value::bool(true),
+        Value::bool(false),
+        Value::string("y".to_owned()),
+        Value::string("n".to_owned()),
+        Value::string("YeS".to_owned()),
+    ];
+    test_de(yaml, &expected);
+
+    // An explicit !!bool tag accepts any casing, as in PyYAML's
+    // construct_yaml_bool...
+    let yaml = indoc! {"
+        - !!bool YeS
+        - !!bool oFF
+    "};
+    let expected = vec![Value::bool(true), Value::bool(false)];
+    test_de(yaml, &expected);
+
+    // ...but y/n are not booleans even with the tag.
+    assert!(dbt_yaml::from_str::<Value>("!!bool y").is_err());
+
+    // Bool-typed fields resolve the YAML 1.1 words, untagged and tagged.
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct Data {
+        untagged: bool,
+        tagged: bool,
+    }
+    let yaml = indoc! {"
+        untagged: on
+        tagged: !!bool YeS
+    "};
+    let expected = Data {
+        untagged: true,
+        tagged: true,
+    };
+    test_de(yaml, &expected);
+
+    // A string that now resolves as a boolean is quoted on serialization, so
+    // the round trip keeps it a string.
+    let value = Value::string("yes".to_owned());
+    let serialized = dbt_yaml::to_string(&value).unwrap();
+    assert_eq!(serialized, "'yes'\n");
+    let reparsed = dbt_yaml::from_str::<Value>(&serialized).unwrap();
+    assert_eq!(reparsed, value);
 }
 
 #[test]
