@@ -19,7 +19,7 @@ use crate::{
     Error, Mapping, Path, Sequence, Value,
 };
 
-use super::{FieldTransformer, UnusedKeyCallback};
+use super::{box_unused_key_callback, FieldTransformer, OwnedUnusedKeyCallback, UnusedKeyCallback};
 
 fn visit_sequence<'de, 'a, 'u, 'f, V>(
     sequence: Sequence,
@@ -444,7 +444,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
                 save_deserializer_state(
                     Some(self.value),
                     self.path,
-                    self.unused_key_callback,
+                    self.unused_key_callback.map(box_unused_key_callback),
                     self.field_transformer,
                 );
             }
@@ -470,7 +470,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
                 save_deserializer_state(
                     Some(self.value),
                     self.path,
-                    self.unused_key_callback,
+                    self.unused_key_callback.map(box_unused_key_callback),
                     self.field_transformer,
                 );
             }
@@ -1316,7 +1316,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for MapDeserializer<'_, 'u, 'f> {
                 save_deserializer_state(
                     Some(value),
                     self.path,
-                    self.unused_key_callback,
+                    self.unused_key_callback.map(box_unused_key_callback),
                     self.field_transformer,
                 );
             }
@@ -1560,25 +1560,30 @@ impl<'de, 'r, 'f> Deserializer<'de> for FlattenDeserializer<'_, 'r, 'f> {
     where
         V: Visitor<'de>,
     {
-        let mut collect_unused = move |_: Path<'_>, key: &Value, value: &Value| {
-            self.remaining.push((key.clone(), value.clone()));
-        };
-
         if super::should_short_circuit_any(self.field_transformer.is_some()) {
             let value = Value::mapping(self.iter.collect());
-            // SAFETY: self.unused_key_callback and self.field_transformer are
-            // passed in from outside and guaranteed to be valid for 'de
+            let remaining = self.remaining;
+            let collect_unused: OwnedUnusedKeyCallback<'_> =
+                Box::new(move |_: Path<'_>, key: &Value, value: &Value| {
+                    remaining.push((key.clone(), value.clone()));
+                });
+            // SAFETY: the boxed closure captures only `remaining`, a &mut
+            // reference into the enclosing StructDeserializer, which stays
+            // alive until after the saved callback's last invocation.
             unsafe {
                 save_deserializer_state(
                     Some(value),
                     self.path,
-                    Some(&mut collect_unused as UnusedKeyCallback<'_>),
+                    Some(collect_unused),
                     self.field_transformer,
                 );
             }
             return Err(Error::custom("Value deserialized via fast path"));
         }
 
+        let mut collect_unused = move |_: Path<'_>, key: &Value, value: &Value| {
+            self.remaining.push((key.clone(), value.clone()));
+        };
         let deserializer = MapDeserializer {
             iter: self.iter,
             current_key: None,
