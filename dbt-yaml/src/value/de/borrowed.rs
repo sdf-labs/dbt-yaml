@@ -11,13 +11,16 @@ use serde::{
 use crate::{
     error,
     value::{
-        de::{reset_is_deserializing_value, save_deserializer_state, ValueDeserializer},
+        de::{
+            box_unused_key_callback, reset_is_deserializing_value, save_deserializer_state,
+            ValueDeserializer,
+        },
         tagged,
     },
     Error, Mapping, Path, Sequence, Value,
 };
 
-use super::{FieldTransformer, UnusedKeyCallback};
+use super::{FieldTransformer, OwnedUnusedKeyCallback, UnusedKeyCallback};
 
 fn visit_sequence_ref<'de, 'p, 'u, 'f, V>(
     sequence: &'de Sequence,
@@ -448,7 +451,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueRefDeserializer<'de, '_, 'u, 'f> {
                 save_deserializer_state(
                     Some(self.value.clone()),
                     self.path,
-                    self.unused_key_callback,
+                    self.unused_key_callback.map(box_unused_key_callback),
                     self.field_transformer,
                 );
             }
@@ -1378,7 +1381,7 @@ impl<'de> Deserializer<'de> for MapRefDeserializer<'de, '_, '_, '_> {
                 save_deserializer_state(
                     Some(value),
                     self.path,
-                    self.unused_key_callback,
+                    self.unused_key_callback.map(box_unused_key_callback),
                     self.field_transformer,
                 );
             }
@@ -1653,6 +1656,38 @@ impl<'de> Deserializer<'de> for FlattenRefDeserializer<'de, '_, '_, '_> {
     where
         V: Visitor<'de>,
     {
+        if super::should_short_circuit_any(self.field_transformer.is_some()) {
+            let entries: Vec<(&'de Value, &'de Value)> = self.iter.into_iter().flatten().collect();
+            let value = Value::mapping(
+                entries
+                    .iter()
+                    .map(|(key, value)| ((*key).clone(), (*value).clone()))
+                    .collect(),
+            );
+            let remaining = self.remaining;
+            let collect_unused: OwnedUnusedKeyCallback<'_> =
+                Box::new(move |_: Path<'_>, key: &Value, _value: &Value| {
+                    // Forward the ORIGINAL borrowed entries, so `remaining`
+                    // never holds references into the saved state Value.
+                    if let Some((k, v)) = entries.iter().find(|(k, _)| **k == *key) {
+                        remaining.push((*k, *v));
+                    }
+                });
+            // SAFETY: the boxed closure captures `remaining`, a &mut reference
+            // into the enclosing StructRefDeserializer, which stays alive until
+            // after the saved callback's last invocation, and 'de references
+            // into the source Value, which outlive all invocations.
+            unsafe {
+                save_deserializer_state(
+                    Some(value),
+                    self.path,
+                    Some(collect_unused),
+                    self.field_transformer,
+                );
+            }
+            return Err(Error::custom("Value deserialized via fast path"));
+        }
+
         let mut collect_unused = move |_: Path<'_>, key: &Value, value: &Value| {
             // SAFETY: the references passed to this closure are
             // guaranteed to be borrowed for 'de
@@ -1660,27 +1695,6 @@ impl<'de> Deserializer<'de> for FlattenRefDeserializer<'de, '_, '_, '_> {
             let value: &'de Value = unsafe { std::mem::transmute(value) };
             self.remaining.push((key, value));
         };
-
-        if super::should_short_circuit_any(self.field_transformer.is_some()) {
-            let value = Value::mapping(
-                self.iter
-                    .into_iter()
-                    .flatten()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect(),
-            );
-            unsafe {
-                save_deserializer_state(
-                    Some(value),
-                    self.path,
-                    // FIXME: we can't propagate the collect_unused callback
-                    // because it's internally unsafe:
-                    None,
-                    self.field_transformer,
-                );
-            }
-            return Err(Error::custom("Value deserialized via fast path"));
-        }
 
         let deserializer = MapRefDeserializer {
             iter: self.iter,

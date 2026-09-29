@@ -27,6 +27,19 @@ pub type DuplicateKeyCallback<'d> =
 /// A callback type for handling unused keys during deserialization.
 pub type UnusedKeyCallback<'u> = &'u mut dyn for<'p, 'v> FnMut(Path<'p>, &'v Value, &'v Value);
 
+/// An owned [`UnusedKeyCallback`], used for callbacks that must outlive the
+/// deserializer call that created them (see [`save_deserializer_state`]).
+pub type OwnedUnusedKeyCallback<'u> =
+    Box<dyn for<'p, 'v> FnMut(Path<'p>, &'v Value, &'v Value) + 'u>;
+
+/// Converts a borrowed [`UnusedKeyCallback`] into an [`OwnedUnusedKeyCallback`].
+///
+/// The box owns the `&mut` reborrow itself; the referent must still outlive
+/// every invocation of the returned callback.
+pub(crate) fn box_unused_key_callback(cb: UnusedKeyCallback<'_>) -> OwnedUnusedKeyCallback<'_> {
+    Box::new(cb)
+}
+
 /// A transformer function for modifying field values during deserialization.
 pub type FieldTransformer<'f> = &'f mut dyn for<'v> FnMut(&'v Value) -> TransformedResult;
 
@@ -435,17 +448,30 @@ fn clear_deserializer_state() {
     private::FIELD_TRANSFORMER.with(|cell| cell.set(None));
 }
 
+/// Saves deserializer state to thread-local storage for extraction by
+/// [`extract_reusable_deserializer_state`].
+///
+/// # Safety
+///
+/// The callbacks and the transformer are lifetime-erased, so callers must
+/// guarantee that every reference captured by them outlives all invocations.
+/// The callback must be an [`OwnedUnusedKeyCallback`] so that the closure
+/// object itself is not a dangling pointer into a stack frame that has already
+/// returned.
 unsafe fn save_deserializer_state<'u, 'f>(
     value: Option<Value>,
     path: Path<'_>,
-    unused_key_callback: Option<UnusedKeyCallback<'u>>,
+    unused_key_callback: Option<OwnedUnusedKeyCallback<'u>>,
     field_transformer: Option<FieldTransformer<'f>>,
 ) {
     private::THE_VALUE.with(|cell| cell.set(value));
     private::THE_PATH.with(|cell| cell.set(Some(path.to_owned_path())));
     private::UNUSED_KEY_CALLBACK.with(|cell| {
         cell.set(unsafe {
-            std::mem::transmute::<Option<UnusedKeyCallback<'u>>, Option<UnusedKeyCallback<'static>>>(unused_key_callback)
+            std::mem::transmute::<
+                Option<OwnedUnusedKeyCallback<'u>>,
+                Option<OwnedUnusedKeyCallback<'static>>,
+            >(unused_key_callback)
         })
     });
     private::FIELD_TRANSFORMER.with(|cell| {
@@ -520,7 +546,7 @@ where
 pub struct DeserializerState {
     value: Value,
     path: OwnedPath,
-    unused_key_callback: Option<UnusedKeyCallback<'static>>,
+    unused_key_callback: Option<OwnedUnusedKeyCallback<'static>>,
     field_transformer: Option<FieldTransformer<'static>>,
 }
 
@@ -529,7 +555,7 @@ impl DeserializerState {
     pub fn new(
         value: Value,
         path: OwnedPath,
-        unused_key_callback: Option<UnusedKeyCallback<'static>>,
+        unused_key_callback: Option<OwnedUnusedKeyCallback<'static>>,
         field_transformer: Option<FieldTransformer<'static>>,
     ) -> Self {
         Self {
@@ -575,7 +601,7 @@ impl DeserializerState {
     }
 
     /// Extracts the unused key callback from the state, if any.
-    pub fn take_unused_key_callback(&mut self) -> Option<UnusedKeyCallback<'static>> {
+    pub fn take_unused_key_callback(&mut self) -> Option<OwnedUnusedKeyCallback<'static>> {
         self.unused_key_callback.take()
     }
 }
@@ -607,7 +633,7 @@ mod private {
 
         pub static THE_VALUE: std::cell::Cell<Option<Value>> = const { std::cell::Cell::new(None) };
         pub static THE_PATH: std::cell::Cell<Option<OwnedPath>> = const { std::cell::Cell::new(None) };
-        pub static UNUSED_KEY_CALLBACK: std::cell::Cell<Option<super::UnusedKeyCallback<'static>>> = std::cell::Cell::new(
+        pub static UNUSED_KEY_CALLBACK: std::cell::Cell<Option<super::OwnedUnusedKeyCallback<'static>>> = std::cell::Cell::new(
             None
         );
         pub static FIELD_TRANSFORMER: std::cell::Cell<Option<super::FieldTransformer<'static>>> = std::cell::Cell::new(

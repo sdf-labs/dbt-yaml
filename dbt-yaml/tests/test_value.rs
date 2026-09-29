@@ -761,6 +761,80 @@ fn test_verbatim_flatten_nested() {
 
 #[cfg(feature = "flatten_dunder")]
 #[test]
+fn test_flatten_untagged_enum_in_first_slot() {
+    // Regression test: an UntaggedEnumDeserialize enum in a non-last
+    // flatten_dunder slot (served by FlattenDeserializer) used to segfault:
+    // the deserializer state saved a borrowed pointer to a stack-local closure
+    // that the derive invoked after the call had returned.
+    #[derive(Deserialize, PartialEq, Eq, Debug)]
+    struct RangeConfig {
+        range: i32,
+    }
+
+    #[derive(Deserialize, PartialEq, Eq, Debug)]
+    struct TimeConfig {
+        granularity: String,
+    }
+
+    #[derive(UntaggedEnumDeserialize, PartialEq, Eq, Debug)]
+    #[serde(untagged)]
+    enum Partition {
+        Range(RangeConfig),
+        Time(TimeConfig),
+    }
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct Thing {
+        field: String,
+        __inner__: Partition,
+        __rest__: HashMap<String, Verbatim<Option<i32>>>,
+    }
+
+    let value = dbt_yaml::from_str::<Value>(indoc! {"
+        field: c1
+        range: 3
+        extra: 42
+    "})
+    .unwrap();
+    let (thing, unused_keys) = deserialize_value::<Thing>(value, |_| Ok(None));
+    if !unused_keys.is_empty() {
+        panic!("unexpected unused keys: {:?}", unused_keys);
+    }
+    assert_eq!(thing.field, "c1");
+    assert_eq!(thing.__inner__, Partition::Range(RangeConfig { range: 3 }));
+    // Keys the matched variant did not consume flow to the next flatten field.
+    assert_eq!(*thing.__rest__["extra"], Some(42));
+
+    let value = dbt_yaml::from_str::<Value>(indoc! {"
+        field: c1
+        granularity: day
+    "})
+    .unwrap();
+    let (thing, _) = deserialize_value::<Thing>(value, |_| Ok(None));
+    assert_eq!(
+        thing.__inner__,
+        Partition::Time(TimeConfig {
+            granularity: "day".to_string()
+        })
+    );
+    assert!(thing.__rest__.is_empty());
+
+    // No matching variant: the saved callback is dropped without invocation.
+    let value = dbt_yaml::from_str::<Value>(indoc! {"
+        field: c1
+    "})
+    .unwrap();
+    let (result, _) = deserialize_value_inner::<Thing>(value, |_| Ok(None));
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("data did not match any variant of untagged enum Partition"),
+        "unexpected error: {err}"
+    );
+}
+
+#[cfg(feature = "flatten_dunder")]
+#[test]
 fn test_multi_flatten_fields() {
     #[derive(Deserialize, PartialEq, Eq, Debug)]
     struct Thing6 {
@@ -1185,9 +1259,8 @@ fn test_untagged_enum_flatten_dunder() {
                 b: None.into(),
                 c: true,
             }),
-            // FIXME: flatten keys after a flattened untagged enum doesn't work yet:
-            // __rest__: HashMap::from([("y".to_string(), "5".to_string())]),
-            __rest__: HashMap::new(),
+            // Keys the matched variant did not consume flow to `__rest__`.
+            __rest__: HashMap::from([("y".to_string(), "5".to_string())]),
         })
     );
 
