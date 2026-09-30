@@ -835,6 +835,136 @@ fn test_flatten_untagged_enum_in_first_slot() {
 
 #[cfg(feature = "flatten_dunder")]
 #[test]
+fn test_flatten_mixed_enum_in_first_slot() {
+    // A mixed enum (tagged variants + untagged fallback) in a non-last
+    // flatten_dunder slot: dispatch must work through the flatten machinery
+    // and genuinely unused keys must flow to the next flatten field.
+    #[derive(Deserialize, PartialEq, Eq, Debug)]
+    struct RangeConfig {
+        range: i32,
+    }
+
+    #[derive(Deserialize, PartialEq, Eq, Debug)]
+    struct TimeConfig {
+        granularity: String,
+    }
+
+    #[derive(UntaggedEnumDeserialize, PartialEq, Eq, Debug)]
+    #[serde(tag = "kind")]
+    enum Partition {
+        Range(RangeConfig),
+        #[serde(untagged)]
+        Time(TimeConfig),
+    }
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct Thing {
+        field: String,
+        __inner__: Partition,
+        __rest__: HashMap<String, Verbatim<Option<i32>>>,
+    }
+
+    // Tagged match: the tag and variant fields are consumed; the extra key
+    // flows through to __rest__.
+    let value = dbt_yaml::from_str::<Value>(indoc! {"
+        field: c1
+        kind: Range
+        range: 3
+        extra: 42
+    "})
+    .unwrap();
+    let (thing, unused_keys) = deserialize_value::<Thing>(value, |_| Ok(None));
+    if !unused_keys.is_empty() {
+        panic!("unexpected unused keys: {:?}", unused_keys);
+    }
+    assert_eq!(thing.__inner__, Partition::Range(RangeConfig { range: 3 }));
+    assert_eq!(*thing.__rest__["extra"], Some(42));
+
+    // Fallback: the tag is unknown, so the untagged variant matches. The tag
+    // key is consumed by dispatch; the extra key flows through.
+    let value = dbt_yaml::from_str::<Value>(indoc! {"
+        field: c1
+        kind: Nope
+        granularity: day
+        extra: 42
+    "})
+    .unwrap();
+    let (thing, _) = deserialize_value::<Thing>(value, |_| Ok(None));
+    assert_eq!(
+        thing.__inner__,
+        Partition::Time(TimeConfig {
+            granularity: "day".to_string()
+        })
+    );
+    assert_eq!(*thing.__rest__["extra"], Some(42));
+}
+
+#[cfg(feature = "flatten_dunder")]
+#[test]
+fn test_flatten_mixed_external_enum_in_first_slot() {
+    // Same as above, but with an externally-tagged mixed enum: the tag is
+    // looked up among the leftover keys by variant name, matching serde's
+    // FlatMapDeserializer.
+    #[derive(Deserialize, PartialEq, Eq, Debug)]
+    struct RangeConfig {
+        range: i32,
+    }
+
+    #[derive(Deserialize, PartialEq, Eq, Debug)]
+    struct TimeConfig {
+        granularity: String,
+    }
+
+    #[derive(UntaggedEnumDeserialize, PartialEq, Eq, Debug)]
+    enum ExtPartition {
+        Range(RangeConfig),
+        #[serde(untagged)]
+        Time(TimeConfig),
+    }
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct Thing {
+        field: String,
+        __ext__: ExtPartition,
+        __rest__: HashMap<String, Verbatim<Option<i32>>>,
+    }
+
+    // Wrapped match: the Range key is found among the leftover keys; the
+    // extra key flows through to __rest__.
+    let value = dbt_yaml::from_str::<Value>(indoc! {"
+        field: c1
+        Range:
+          range: 7
+        extra: 42
+    "})
+    .unwrap();
+    let (thing, unused_keys) = deserialize_value::<Thing>(value, |_| Ok(None));
+    if !unused_keys.is_empty() {
+        panic!("unexpected unused keys: {:?}", unused_keys);
+    }
+    assert_eq!(thing.__ext__, ExtPartition::Range(RangeConfig { range: 7 }));
+    assert_eq!(*thing.__rest__["extra"], Some(42));
+
+    // Fallback: no leftover key names a variant, so the untagged variant
+    // matches against the whole leftover map.
+    let value = dbt_yaml::from_str::<Value>(indoc! {"
+        field: c1
+        granularity: day
+        extra: 42
+    "})
+    .unwrap();
+    let (thing, _) = deserialize_value::<Thing>(value, |_| Ok(None));
+    assert_eq!(
+        thing.__ext__,
+        ExtPartition::Time(TimeConfig {
+            granularity: "day".to_string()
+        })
+    );
+    assert_eq!(*thing.__rest__["extra"], Some(42));
+}
+
+#[cfg(feature = "flatten_dunder")]
+#[test]
 fn test_multi_flatten_fields() {
     #[derive(Deserialize, PartialEq, Eq, Debug)]
     struct Thing6 {
@@ -1435,5 +1565,535 @@ mod timestamp {
 
         let yaml = dbt_yaml::to_string(&v).unwrap();
         assert_eq!(yaml, "2001-12-15T02:59:43\n");
+    }
+}
+
+/// Tests for the runtime helpers used by mixed (tagged + untagged variant)
+/// enum dispatch.
+mod mixed_enum_dispatch {
+    use dbt_yaml::path::OwnedPath;
+    use dbt_yaml::value::{
+        extract_external_tag_and_deserializer_state, extract_optional_tag_and_deserializer_state,
+        DeserializerState, ExternalTag,
+    };
+    use dbt_yaml::Value;
+    use serde::de::IntoDeserializer;
+    use serde::Deserialize as _;
+
+    fn state_of(value: &Value) -> DeserializerState {
+        DeserializerState::new(value.clone(), OwnedPath::Root, None, None)
+    }
+
+    fn state_value(state: &mut DeserializerState) -> Value {
+        Value::deserialize(state.get_deserializer(None)).unwrap()
+    }
+
+    #[test]
+    fn optional_tag_present_keeps_mapping_intact() {
+        let value: Value = dbt_yaml::from_str("type: A\na: 1\n").unwrap();
+        let (tag, mut state) =
+            extract_optional_tag_and_deserializer_state(value.clone().into_deserializer(), "type")
+                .unwrap();
+        assert_eq!(tag.as_ref().and_then(Value::as_str), Some("A"));
+        // The tag key is NOT removed: the state still holds the full mapping.
+        assert_eq!(state_value(&mut state), value);
+    }
+
+    #[test]
+    fn optional_tag_missing_or_not_a_mapping() {
+        let value: Value = dbt_yaml::from_str("a: 1\n").unwrap();
+        let (tag, _) =
+            extract_optional_tag_and_deserializer_state(value.into_deserializer(), "type").unwrap();
+        assert!(tag.is_none());
+
+        let value: Value = dbt_yaml::from_str("- 1\n- 2\n").unwrap();
+        let (tag, _) =
+            extract_optional_tag_and_deserializer_state(value.into_deserializer(), "type").unwrap();
+        assert!(tag.is_none());
+    }
+
+    #[test]
+    fn strip_and_restore_tag_key() {
+        let value: Value = dbt_yaml::from_str("type: A\na: 1\n").unwrap();
+        let mut state = state_of(&value);
+
+        let entry = state.strip_tag_key("type").unwrap();
+        let stripped = state_value(&mut state);
+        assert!(stripped.get("type").is_none());
+        assert!(stripped.get("a").is_some());
+
+        state.restore_tag_key(entry);
+        let restored = state_value(&mut state);
+        assert_eq!(restored.get("type").and_then(Value::as_str), Some("A"));
+        assert!(restored.get("a").is_some());
+        // The tag key is restored at its original position.
+        match (&restored, &value) {
+            (Value::Mapping(r, ..), Value::Mapping(v, ..)) => {
+                assert!(r.keys().eq(v.keys()), "key order not preserved");
+            }
+            _ => panic!("expected mappings"),
+        }
+
+        // Stripping an absent key is a no-op.
+        assert!(state.strip_tag_key("nope").is_none());
+        assert_eq!(state_value(&mut state).get("a"), value.get("a"));
+    }
+
+    #[test]
+    fn external_tag_shapes() {
+        // Single-key mapping -> Wrapped(tag key)
+        let value: Value = dbt_yaml::from_str("A:\n  x: 1\n").unwrap();
+        let (tag, _) =
+            extract_external_tag_and_deserializer_state(value.into_deserializer(), &[]).unwrap();
+        match tag {
+            Some(ExternalTag::Wrapped(key)) => assert_eq!(key.as_str(), Some("A")),
+            other => panic!("expected Wrapped, got {other:?}"),
+        }
+
+        // Bare string scalar -> Bare
+        let value: Value = dbt_yaml::from_str("Unit\n").unwrap();
+        let (tag, _) =
+            extract_external_tag_and_deserializer_state(value.into_deserializer(), &[]).unwrap();
+        match tag {
+            Some(ExternalTag::Bare(v)) => assert_eq!(v.as_str(), Some("Unit")),
+            other => panic!("expected Bare, got {other:?}"),
+        }
+
+        // Multi-key mapping -> None
+        let value: Value = dbt_yaml::from_str("x: 1\ny: 2\n").unwrap();
+        let (tag, _) =
+            extract_external_tag_and_deserializer_state(value.into_deserializer(), &[]).unwrap();
+        assert!(tag.is_none());
+
+        // Non-string scalar -> None
+        let value: Value = dbt_yaml::from_str("42\n").unwrap();
+        let (tag, _) =
+            extract_external_tag_and_deserializer_state(value.into_deserializer(), &[]).unwrap();
+        assert!(tag.is_none());
+    }
+
+    #[test]
+    fn focus_and_restore_external_content() {
+        let value: Value = dbt_yaml::from_str("A:\n  x: 1\n  y: 2\n").unwrap();
+        let mut state = state_of(&value);
+
+        let (original, index, key) = state.focus_external_content("A").unwrap();
+        let inner = state_value(&mut state);
+        assert_eq!(
+            inner.get("x").and_then(Value::as_i64),
+            Some(1),
+            "focused value should be the inner content"
+        );
+
+        state.restore_external_content(original, index, key);
+        let restored = state_value(&mut state);
+        assert_eq!(restored, value);
+
+        // Focusing a non-single-key mapping is a no-op.
+        let value2: Value = dbt_yaml::from_str("x: 1\ny: 2\n").unwrap();
+        let mut state2 = state_of(&value2);
+        assert!(state2.focus_external_content("A").is_none());
+        assert_eq!(state_value(&mut state2), value2);
+    }
+
+    #[test]
+    fn focus_extends_path() {
+        let value: Value = dbt_yaml::from_str("A:\n  x: 1\n  y: 2\n").unwrap();
+        let mut state = state_of(&value);
+        let _original = state.focus_external_content("A").unwrap();
+
+        #[derive(serde_derive::Deserialize)]
+        struct Inner {
+            x: i32,
+        }
+
+        let mut unused = vec![];
+        let mut cb = |path: dbt_yaml::Path<'_>, key: &Value, _value: &Value| {
+            unused.push((path.to_string(), key.clone()));
+        };
+        let inner: Inner = Inner::deserialize(state.get_deserializer(Some(&mut cb))).unwrap();
+        assert_eq!(inner.x, 1);
+        assert_eq!(unused.len(), 1);
+        assert_eq!(unused[0].0, "A.y", "unused key path includes the tag key");
+        assert_eq!(unused[0].1.as_str(), Some("y"));
+    }
+}
+
+/// Parity tests for internally-tagged enums with untagged variants: the
+/// `UntaggedEnumDeserialize` derive must behave like plain serde derive.
+mod mixed_enum_internal_tag {
+    use super::{deserialize_value, deserialize_value_inner};
+    use dbt_yaml::Value;
+
+    #[derive(Debug, PartialEq, serde_derive::Deserialize)]
+    struct TaggedStruct {
+        a: i32,
+    }
+
+    #[derive(Debug, PartialEq, serde_derive::Deserialize)]
+    struct FallbackStruct {
+        b: String,
+    }
+
+    mod via_serde {
+        #[derive(Debug, PartialEq, serde_derive::Deserialize)]
+        #[serde(tag = "type")]
+        pub enum Mixed {
+            Unit,
+            Tagged(super::TaggedStruct),
+            #[serde(untagged)]
+            Fallback(super::FallbackStruct),
+            #[serde(untagged)]
+            Other(dbt_yaml::Value),
+        }
+    }
+
+    mod via_derive {
+        #[derive(Debug, PartialEq, dbt_yaml_derive::UntaggedEnumDeserialize)]
+        #[serde(tag = "type")]
+        pub enum Mixed {
+            Unit,
+            Tagged(super::TaggedStruct),
+            #[serde(untagged)]
+            Fallback(super::FallbackStruct),
+            #[serde(untagged)]
+            Other(dbt_yaml::Value),
+        }
+    }
+
+    /// Structural equality, ignoring spans and mapping key order. The derive
+    /// path preserves real spans while serde's Content buffering degrades
+    /// them, so spans are excluded from parity comparison.
+    fn semantic_eq(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Null(..), Value::Null(..)) => true,
+            (Value::Bool(x, ..), Value::Bool(y, ..)) => x == y,
+            (Value::Number(x, ..), Value::Number(y, ..)) => x == y,
+            (Value::String(x, ..), Value::String(y, ..)) => x == y,
+            (Value::Sequence(x, ..), Value::Sequence(y, ..)) => {
+                x.len() == y.len() && x.iter().zip(y.iter()).all(|(x, y)| semantic_eq(x, y))
+            }
+            (Value::Mapping(x, ..), Value::Mapping(y, ..)) => {
+                x.len() == y.len()
+                    && x.iter()
+                        .all(|(k, v)| y.get(k).is_some_and(|v2| semantic_eq(v, v2)))
+            }
+            _ => false,
+        }
+    }
+
+    /// Asserts that plain serde derive and `UntaggedEnumDeserialize` agree on
+    /// the outcome for `yaml`, and returns the derived enum's result.
+    fn check_parity(yaml: &str) -> Result<via_derive::Mixed, String> {
+        let value: Value = dbt_yaml::from_str(yaml).unwrap();
+        let expected = deserialize_value_inner::<via_serde::Mixed>(value.clone(), |_| Ok(None)).0;
+        let actual = deserialize_value_inner::<via_derive::Mixed>(value, |_| Ok(None)).0;
+        match (&expected, &actual) {
+            (Ok(e), Ok(a)) => {
+                let variant_matches = match (e, a) {
+                    (via_serde::Mixed::Unit, via_derive::Mixed::Unit) => true,
+                    (via_serde::Mixed::Tagged(x), via_derive::Mixed::Tagged(y)) => x == y,
+                    (via_serde::Mixed::Fallback(x), via_derive::Mixed::Fallback(y)) => x == y,
+                    (via_serde::Mixed::Other(x), via_derive::Mixed::Other(y)) => semantic_eq(x, y),
+                    _ => false,
+                };
+                assert!(
+                    variant_matches,
+                    "parity mismatch for input {yaml:?}: {e:?} vs {a:?}"
+                );
+            }
+            (Err(e), Err(a)) => {
+                assert_eq!(
+                    a.to_string().split(" at line").next().unwrap(),
+                    e.to_string().split(" at line").next().unwrap(),
+                    "error mismatch for input {yaml:?}"
+                );
+            }
+            _ => panic!("outcome mismatch for input {yaml:?}: {expected:?} vs {actual:?}"),
+        }
+        actual.map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn serde_parity_matrix() {
+        let cases = [
+            // Known tag, variant parses.
+            "type: Unit\n",
+            "type: Tagged\na: 1\n",
+            // Known tag, variant fails: fall back to untagged variants.
+            "type: Tagged\na: bad\n",
+            "type: Tagged\na: bad\nb: hi\n",
+            // Unknown tag: fall back to untagged variants.
+            "type: Nope\nb: hi\n",
+            "type: Nope\nx: 1\n",
+            // Missing tag: untagged variants only.
+            "b: hi\n",
+            "c: true\n",
+            // Non-mapping input: untagged variants only.
+            "just a scalar\n",
+        ];
+        for yaml in cases {
+            let _ = check_parity(yaml);
+        }
+    }
+
+    /// Documented divergence: serde treats a sequence as `[tag, content]` and
+    /// even accepts a numeric variant index as the tag (its bincode-oriented
+    /// internally-tagged sequence form), so `[1, 2]` matches variant index 1.
+    /// The derive does not replicate this: sequences go straight to the
+    /// untagged variants.
+    #[test]
+    fn sequence_input_is_untagged_only() {
+        let res = check_parity_ignoring_outcome("- 1\n- 2\n");
+        assert!(matches!(
+            res,
+            Ok(via_derive::Mixed::Other(Value::Sequence(..)))
+        ));
+    }
+
+    /// Runs only the derived enum, skipping the parity assertion.
+    fn check_parity_ignoring_outcome(yaml: &str) -> Result<via_derive::Mixed, String> {
+        let value: Value = dbt_yaml::from_str(yaml).unwrap();
+        deserialize_value_inner::<via_derive::Mixed>(value, |_| Ok(None))
+            .0
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn fallback_sees_tag_key() {
+        // The untagged fallback runs against the full original value,
+        // including the tag key.
+        let res = check_parity("type: Tagged\na: bad\n").unwrap();
+        match res {
+            via_derive::Mixed::Other(v) => {
+                assert_eq!(v.get("type").and_then(Value::as_str), Some("Tagged"));
+                assert_eq!(v.get("a").and_then(Value::as_str), Some("bad"));
+            }
+            other => panic!("expected Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn known_tag_failure_falls_back_to_matching_untagged_variant() {
+        let res = check_parity("type: Tagged\na: bad\nb: hi\n").unwrap();
+        assert!(
+            matches!(res, via_derive::Mixed::Fallback(FallbackStruct { ref b }) if b == "hi"),
+            "expected Fallback, got {res:?}"
+        );
+    }
+
+    #[test]
+    fn unused_keys_forwarded_and_tag_key_filtered() {
+        // Tagged match: extra keys are forwarded; the tag key is consumed by
+        // the dispatch and never reported.
+        let value: Value = dbt_yaml::from_str("type: Tagged\na: 1\nextra: 9\n").unwrap();
+        let (res, unused) = deserialize_value::<via_derive::Mixed>(value, |_| Ok(None));
+        assert!(matches!(res, via_derive::Mixed::Tagged(_)));
+        assert_eq!(unused.len(), 1);
+        assert_eq!(unused[0].1.as_str(), Some("extra"));
+
+        // Untagged match after an unknown tag: extra keys are forwarded; the
+        // tag key is filtered out even though the variant saw it.
+        let value: Value = dbt_yaml::from_str("type: Nope\nb: hi\nextra: 9\n").unwrap();
+        let (res, unused) = deserialize_value::<via_derive::Mixed>(value, |_| Ok(None));
+        assert!(matches!(res, via_derive::Mixed::Fallback(_)));
+        assert_eq!(unused.len(), 1, "tag key must not be reported: {unused:?}");
+        assert_eq!(unused[0].1.as_str(), Some("extra"));
+    }
+
+    mod no_catch_all {
+        #[derive(Debug, PartialEq, serde_derive::Deserialize)]
+        #[serde(tag = "type")]
+        pub enum Mixed {
+            Tagged(super::TaggedStruct),
+            #[serde(untagged)]
+            Fallback(super::FallbackStruct),
+        }
+    }
+
+    mod via_derive_no_catch {
+        #[derive(Debug, PartialEq, dbt_yaml_derive::UntaggedEnumDeserialize)]
+        #[serde(tag = "type")]
+        pub enum Mixed {
+            Tagged(super::TaggedStruct),
+            #[serde(untagged)]
+            Fallback(super::FallbackStruct),
+        }
+    }
+
+    /// Maps a deserialization result to a comparable outcome, stripping any
+    /// location suffix from errors.
+    fn outcome<T>(r: Result<T, dbt_yaml::Error>) -> Result<(), String> {
+        r.map(|_| ())
+            .map_err(|e| e.to_string().split(" at line").next().unwrap().to_string())
+    }
+
+    #[test]
+    fn no_match_error_matches_serde() {
+        let value: Value = dbt_yaml::from_str("c: true\n").unwrap();
+        let expected =
+            deserialize_value_inner::<no_catch_all::Mixed>(value.clone(), |_| Ok(None)).0;
+        let actual = deserialize_value_inner::<via_derive_no_catch::Mixed>(value, |_| Ok(None)).0;
+
+        let actual = outcome(actual);
+        assert_eq!(actual, outcome(expected));
+        assert_eq!(
+            actual.unwrap_err(),
+            "data did not match any variant of untagged enum Mixed"
+        );
+    }
+}
+
+/// Parity tests for externally-tagged enums with untagged variants: the
+/// `UntaggedEnumDeserialize` derive must behave like plain serde derive.
+mod mixed_enum_external {
+    use super::{deserialize_value, deserialize_value_inner};
+    use dbt_yaml::Value;
+
+    #[derive(Debug, PartialEq, serde_derive::Deserialize)]
+    struct TaggedStruct {
+        a: i32,
+    }
+
+    #[derive(Debug, PartialEq, serde_derive::Deserialize)]
+    struct FallbackStruct {
+        b: String,
+    }
+
+    mod via_serde {
+        #[derive(Debug, PartialEq, serde_derive::Deserialize)]
+        pub enum Mixed {
+            Unit,
+            Tagged(super::TaggedStruct),
+            NewType(i32),
+            #[serde(untagged)]
+            Fallback(super::FallbackStruct),
+            #[serde(untagged)]
+            Other(dbt_yaml::Value),
+        }
+    }
+
+    mod via_derive {
+        #[derive(Debug, PartialEq, dbt_yaml_derive::UntaggedEnumDeserialize)]
+        pub enum Mixed {
+            Unit,
+            Tagged(super::TaggedStruct),
+            NewType(i32),
+            #[serde(untagged)]
+            Fallback(super::FallbackStruct),
+            #[serde(untagged)]
+            Other(dbt_yaml::Value),
+        }
+    }
+
+    /// Structural equality, ignoring spans and mapping key order. The derive
+    /// path preserves real spans while serde's Content buffering degrades
+    /// them, so spans are excluded from parity comparison.
+    fn semantic_eq(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Null(..), Value::Null(..)) => true,
+            (Value::Bool(x, ..), Value::Bool(y, ..)) => x == y,
+            (Value::Number(x, ..), Value::Number(y, ..)) => x == y,
+            (Value::String(x, ..), Value::String(y, ..)) => x == y,
+            (Value::Sequence(x, ..), Value::Sequence(y, ..)) => {
+                x.len() == y.len() && x.iter().zip(y.iter()).all(|(x, y)| semantic_eq(x, y))
+            }
+            (Value::Mapping(x, ..), Value::Mapping(y, ..)) => {
+                x.len() == y.len()
+                    && x.iter()
+                        .all(|(k, v)| y.get(k).is_some_and(|v2| semantic_eq(v, v2)))
+            }
+            _ => false,
+        }
+    }
+
+    /// Asserts that plain serde derive and `UntaggedEnumDeserialize` agree on
+    /// the outcome for `yaml`, and returns the derived enum's result.
+    fn check_parity(yaml: &str) -> Result<via_derive::Mixed, String> {
+        let value: Value = dbt_yaml::from_str(yaml).unwrap();
+        let expected = deserialize_value_inner::<via_serde::Mixed>(value.clone(), |_| Ok(None)).0;
+        let actual = deserialize_value_inner::<via_derive::Mixed>(value, |_| Ok(None)).0;
+        match (&expected, &actual) {
+            (Ok(e), Ok(a)) => {
+                let variant_matches = match (e, a) {
+                    (via_serde::Mixed::Unit, via_derive::Mixed::Unit) => true,
+                    (via_serde::Mixed::Tagged(x), via_derive::Mixed::Tagged(y)) => x == y,
+                    (via_serde::Mixed::NewType(x), via_derive::Mixed::NewType(y)) => x == y,
+                    (via_serde::Mixed::Fallback(x), via_derive::Mixed::Fallback(y)) => x == y,
+                    (via_serde::Mixed::Other(x), via_derive::Mixed::Other(y)) => semantic_eq(x, y),
+                    _ => false,
+                };
+                assert!(
+                    variant_matches,
+                    "parity mismatch for input {yaml:?}: {e:?} vs {a:?}"
+                );
+            }
+            (Err(e), Err(a)) => {
+                assert_eq!(
+                    a.to_string().split(" at line").next().unwrap(),
+                    e.to_string().split(" at line").next().unwrap(),
+                    "error mismatch for input {yaml:?}"
+                );
+            }
+            _ => panic!("outcome mismatch for input {yaml:?}: {expected:?} vs {actual:?}"),
+        }
+        actual.map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn serde_parity_matrix() {
+        let cases = [
+            // Unit variant forms.
+            "Unit\n",
+            "Unit: null\n",
+            // Wrapped newtype variant.
+            "NewType: 42\n",
+            // Wrapped struct variant.
+            "Tagged:\n  a: 1\n",
+            // Known tag, variant fails: fall back to untagged variants on the
+            // whole original value.
+            "Unit: 5\n",
+            "NewType: not-a-number\n",
+            "Tagged:\n  a: bad\n",
+            "Tagged:\n  a: bad\nb: hi\n",
+            // Unknown tag: untagged variants see the whole wrapped value.
+            "Nope: 1\n",
+            // Single-key map whose key matches no variant: untagged variants.
+            "b: hi\n",
+            // Untagged variant names are not tags.
+            "Fallback:\n  b: hi\n",
+            // Not an externally-tagged shape: untagged variants only.
+            "x: 1\ny: 2\n",
+            "42\n",
+            "- 1\n- 2\n",
+        ];
+        for yaml in cases {
+            let _ = check_parity(yaml);
+        }
+    }
+
+    #[test]
+    fn fallback_sees_wrapper() {
+        // The untagged fallback runs against the full original value,
+        // including the tag wrapper.
+        let res = check_parity("Tagged:\n  a: bad\n").unwrap();
+        match res {
+            via_derive::Mixed::Other(v) => {
+                assert!(v.get("Tagged").is_some(), "wrapper key visible: {v:?}");
+            }
+            other => panic!("expected Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unused_keys_forwarded_with_content_path() {
+        // Tagged match: extra keys inside the content are forwarded with the
+        // tag-extended path.
+        let value: Value = dbt_yaml::from_str("Tagged:\n  a: 1\n  extra: 9\n").unwrap();
+        let (res, unused) = deserialize_value::<via_derive::Mixed>(value, |_| Ok(None));
+        assert!(matches!(res, via_derive::Mixed::Tagged(_)));
+        assert_eq!(unused.len(), 1);
+        assert_eq!(unused[0].0, "Tagged.extra");
+        assert_eq!(unused[0].1.as_str(), Some("extra"));
     }
 }

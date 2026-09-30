@@ -446,6 +446,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
                     self.path,
                     self.unused_key_callback.map(box_unused_key_callback),
                     self.field_transformer,
+                    false,
                 );
             }
             return Err(Error::custom("Value deserialized via fast path"));
@@ -472,6 +473,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for ValueDeserializer<'_, 'u, 'f> {
                     self.path,
                     self.unused_key_callback.map(box_unused_key_callback),
                     self.field_transformer,
+                    false,
                 );
             }
             return Err(Error::custom("Value deserialized via fast path"));
@@ -1318,6 +1320,7 @@ impl<'de, 'u, 'f> Deserializer<'de> for MapDeserializer<'_, 'u, 'f> {
                     self.path,
                     self.unused_key_callback.map(box_unused_key_callback),
                     self.field_transformer,
+                    false,
                 );
             }
             return Err(Error::custom("Value deserialized via fast path"));
@@ -1576,6 +1579,7 @@ impl<'de, 'r, 'f> Deserializer<'de> for FlattenDeserializer<'_, 'r, 'f> {
                     self.path,
                     Some(collect_unused),
                     self.field_transformer,
+                    true,
                 );
             }
             return Err(Error::custom("Value deserialized via fast path"));
