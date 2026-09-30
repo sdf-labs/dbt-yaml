@@ -129,6 +129,22 @@ impl Mapping {
         index.swap_remove_entry_from(self)
     }
 
+    /// Returns the index of the given key in the map.
+    #[inline]
+    pub fn get_index_of<I: Index>(&self, index: I) -> Option<usize> {
+        index.get_index_of(self)
+    }
+
+    /// Inserts a key-value pair at the given index, shifting subsequent
+    /// entries to the right. If the key already existed, the old value is
+    /// returned.
+    ///
+    /// Panics if `index > len`.
+    #[inline]
+    pub fn shift_insert(&mut self, index: usize, k: Value, v: Value) -> Option<Value> {
+        self.map.shift_insert(index, k, v)
+    }
+
     /// Removes and returns the value corresponding to the key from the map.
     ///
     /// Like [`Vec::remove`], the entry is removed by shifting all of the
@@ -278,6 +294,9 @@ pub trait Index: private::Sealed {
 
     #[doc(hidden)]
     fn shift_remove_entry_from(&self, v: &mut Mapping) -> Option<(Value, Value)>;
+
+    #[doc(hidden)]
+    fn get_index_of(&self, v: &Mapping) -> Option<usize>;
 }
 
 struct HashLikeValue<'a>(&'a str);
@@ -322,6 +341,9 @@ impl Index for Value {
     fn shift_remove_entry_from(&self, v: &mut Mapping) -> Option<(Value, Value)> {
         v.map.shift_remove_entry(self)
     }
+    fn get_index_of(&self, v: &Mapping) -> Option<usize> {
+        v.map.get_index_of(self)
+    }
 }
 
 impl Index for str {
@@ -346,6 +368,9 @@ impl Index for str {
     fn shift_remove_entry_from(&self, v: &mut Mapping) -> Option<(Value, Value)> {
         v.map.shift_remove_entry(&HashLikeValue(self))
     }
+    fn get_index_of(&self, v: &Mapping) -> Option<usize> {
+        v.map.get_index_of(&HashLikeValue(self))
+    }
 }
 
 impl Index for String {
@@ -369,6 +394,9 @@ impl Index for String {
     }
     fn shift_remove_entry_from(&self, v: &mut Mapping) -> Option<(Value, Value)> {
         self.as_str().shift_remove_entry_from(v)
+    }
+    fn get_index_of(&self, v: &Mapping) -> Option<usize> {
+        self.as_str().get_index_of(v)
     }
 }
 
@@ -396,6 +424,9 @@ where
     }
     fn shift_remove_entry_from(&self, v: &mut Mapping) -> Option<(Value, Value)> {
         (**self).shift_remove_entry_from(v)
+    }
+    fn get_index_of(&self, v: &Mapping) -> Option<usize> {
+        (**self).get_index_of(v)
     }
 }
 

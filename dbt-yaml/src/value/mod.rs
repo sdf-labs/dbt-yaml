@@ -27,10 +27,13 @@ pub use crate::number::Number;
 #[doc(inline)]
 pub(crate) use de::ValueVisitor;
 
+pub use de::extract_external_tag_and_deserializer_state;
+pub use de::extract_optional_tag_and_deserializer_state;
 pub use de::extract_reusable_deserializer_state;
 pub use de::extract_tag_and_deserializer_state;
 pub use de::DeserializerState;
 pub use de::DuplicateKeyCallback;
+pub use de::ExternalTag;
 pub use de::FieldTransformer;
 pub use de::TransformedResult;
 pub use de::UnusedKeyCallback;

@@ -19,24 +19,33 @@ use syn::spanned::Spanned;
 struct Variant<'a> {
     ident: syn::Ident,
     fields: &'a syn::Fields,
+    /// Whether the variant carries `#[serde(untagged)]`.
+    untagged: bool,
 }
 
 impl<'a> Variant<'a> {
     pub fn try_from_ast(variant: &'a syn::Variant) -> syn::Result<Self> {
-        if variant
-            .attrs
-            .iter()
-            .any(|attr| attr.path().is_ident("serde"))
-        {
+        let mut untagged = false;
+        for attr in &variant.attrs {
+            if !attr.path().is_ident("serde") {
+                continue;
+            }
+            if let Ok(syn::Expr::Path(expr_path)) = attr.parse_args()
+                && expr_path.path.is_ident("untagged")
+            {
+                untagged = true;
+                continue;
+            }
             return Err(syn::Error::new(
-                variant.span(),
-                "UntaggedEnumDeserialize: #[serde(..)] attributes on variants are not supported",
+                attr.span(),
+                "UntaggedEnumDeserialize: only #[serde(untagged)] is supported on variants",
             ));
         }
 
         Ok(Variant {
             ident: variant.ident.clone(),
             fields: &variant.fields,
+            untagged,
         })
     }
 
@@ -97,9 +106,12 @@ impl<'a> Variant<'a> {
         }
     }
 
+    /// Generates the deserialization attempt for a tagged variant, using
+    /// `de` as the deserializer expression.
     fn gen_tagged_deserialize_expr(
         &self,
         enum_name: &syn::Ident,
+        de: proc_macro2::TokenStream,
     ) -> syn::Result<proc_macro2::TokenStream> {
         match self.fields {
             syn::Fields::Unit => {
@@ -108,7 +120,7 @@ impl<'a> Variant<'a> {
 
                 Ok(quote! {
                     __serde::Deserializer::deserialize_any(
-                        __deserializer,
+                        #de,
                         __serde_yaml::__private::InternallyTaggedUnitVisitor::new(
                             #enum_name,
                             #variant_name
@@ -121,7 +133,7 @@ impl<'a> Variant<'a> {
                     let ty = &fields.unnamed[0].ty;
 
                     Ok(quote! {
-                        <#ty as __serde::Deserialize>::deserialize(__deserializer)
+                        <#ty as __serde::Deserialize>::deserialize(#de)
                     })
                 } else {
                     Err(syn::Error::new(
@@ -142,7 +154,7 @@ impl<'a> Variant<'a> {
         enum_name: &syn::Ident,
         default_rename_policy: Option<RenamePolicy>,
     ) -> syn::Result<proc_macro2::TokenStream> {
-        let expr = self.gen_tagged_deserialize_expr(enum_name)?;
+        let expr = self.gen_tagged_deserialize_expr(enum_name, quote! { __deserializer })?;
         let constructor = self.gen_constructor()?;
         let tag_name = if let Some(policy) = default_rename_policy {
             policy.apply(&self.ident)
@@ -180,20 +192,128 @@ impl<'a> Variant<'a> {
         Ok(block)
     }
 
+    /// Generates the block that constructs the enum variant after a
+    /// successful attempt, forwarding collected unused keys to the saved
+    /// callback.
+    ///
+    /// When `tag_key_to_skip` is given, the tag key itself is not forwarded:
+    /// it belongs to the enum's dispatch, not to the matched variant.
     fn gen_constructor_block(
         &self,
         enum_name: &syn::Ident,
+        tag_key_to_skip: Option<&str>,
     ) -> syn::Result<proc_macro2::TokenStream> {
         let constructor = self.gen_constructor()?;
+
+        let skip_tag_key = tag_key_to_skip.map(|tag_key| {
+            quote! {
+                if __state.is_direct_child(path, #tag_key) {
+                    continue;
+                }
+            }
+        });
 
         let block = quote! {
             if let Ok(__inner) = __inner {
                 if let Some(mut __callback) = __unused_key_callback {
                     for (path, key, value) in __unused_keys.iter() {
+                        #skip_tag_key
                         __callback(*path.as_path(), key, value);
                     }
                 }
                 return Ok(#enum_name::#constructor);
+            }
+        };
+
+        Ok(block)
+    }
+
+    /// Generates the dispatch arm for a tagged variant of a mixed enum: the
+    /// variant is attempted with the tag key stripped; on failure the tag is
+    /// restored and dispatch falls through to the untagged variants.
+    fn gen_mixed_tagged_arm(
+        &self,
+        enum_name: &syn::Ident,
+        tag_key: &str,
+        default_rename_policy: Option<RenamePolicy>,
+    ) -> syn::Result<proc_macro2::TokenStream> {
+        let expr = self.gen_tagged_deserialize_expr(
+            enum_name,
+            quote! { __state.get_deserializer(Some(&mut collect_unused_keys)) },
+        )?;
+        let constructor = self.gen_constructor()?;
+        let tag_name = self.get_name(default_rename_policy);
+
+        let block = quote! {
+            Some(#tag_name) => {
+                let __stripped_tag = __state.strip_tag_key(#tag_key);
+                __unused_keys.clear();
+                let __inner = {
+                    let mut collect_unused_keys =
+                        |path: __serde_yaml::Path<'_>, key: &__serde_yaml::Value, value: &__serde_yaml::Value| {
+                            __unused_keys.push((path.to_owned_path(), key.clone(), value.clone()));
+                        };
+
+                    #expr
+                };
+                if let Ok(__inner) = __inner {
+                    if let Some(mut __callback) = __unused_key_callback {
+                        for (path, key, value) in __unused_keys.iter() {
+                            __callback(*path.as_path(), key, value);
+                        }
+                    }
+                    return Ok(#enum_name::#constructor);
+                }
+                if let Some(__stripped_tag) = __stripped_tag {
+                    __state.restore_tag_key(__stripped_tag);
+                }
+            }
+        };
+
+        Ok(block)
+    }
+
+    /// Generates the dispatch arm for a tagged variant of an
+    /// externally-tagged mixed enum: the variant is attempted against the
+    /// inner content of the single-key mapping; on failure the original value
+    /// is restored and dispatch falls through to the untagged variants.
+    ///
+    /// Unit variants attempt `()` against the content, which only succeeds
+    /// for null content (`{Unit: null}`), matching serde.
+    fn gen_mixed_external_arm(
+        &self,
+        enum_name: &syn::Ident,
+        default_rename_policy: Option<RenamePolicy>,
+    ) -> syn::Result<proc_macro2::TokenStream> {
+        let type_name = self.gen_untagged_type_name()?;
+        let constructor = self.gen_constructor()?;
+        let tag_name = self.get_name(default_rename_policy);
+
+        let block = quote! {
+            Some(#tag_name) => {
+                let (__original, __tag_index, __tag_key) = __state
+                    .focus_external_content(#tag_name)
+                    .expect("externally-tagged shape checked by extraction");
+                __unused_keys.clear();
+                let __inner = {
+                    let mut collect_unused_keys =
+                        |path: __serde_yaml::Path<'_>, key: &__serde_yaml::Value, value: &__serde_yaml::Value| {
+                            __unused_keys.push((path.to_owned_path(), key.clone(), value.clone()));
+                        };
+
+                    #type_name::deserialize(__state.get_deserializer(Some(&mut collect_unused_keys)))
+                };
+                if let Ok(__inner) = __inner {
+                    __state.release_external_content(__original);
+                    if let Some(mut __callback) = __unused_key_callback {
+                        for (path, key, value) in __unused_keys.iter() {
+                            __callback(*path.as_path(), key, value);
+                        }
+                        __state.forward_sibling_keys(#tag_name, &mut *__callback);
+                    }
+                    return Ok(#enum_name::#constructor);
+                }
+                __state.restore_external_content(__original, __tag_index, __tag_key);
             }
         };
 
@@ -255,6 +375,8 @@ struct EnumDef<'a> {
     generics: &'a syn::Generics,
     variants: Vec<Variant<'a>>,
     tag: Option<String>,
+    /// Whether the container carries `#[serde(untagged)]`.
+    untagged_container: bool,
     rename_all: Option<RenamePolicy>,
 }
 
@@ -304,13 +426,6 @@ impl<'a> EnumDef<'a> {
             }
         });
 
-        if !has_untagged_attr && tag_attr.is_none() {
-            return Err(syn::Error::new(
-                input.span(),
-                "UntaggedEnumDeserialize: can only be derived for enums with #[serde(untagged)] or #[serde(tag = \"...\")] attributes",
-            ));
-        }
-
         // Extract any #[serde(rename_all = "...")] directives
         let rename_all_attr = input.attrs.iter().find_map(|attr| {
             if !attr.path().is_ident("serde") {
@@ -357,11 +472,41 @@ impl<'a> EnumDef<'a> {
             .iter()
             .map(Variant::try_from_ast)
             .collect::<syn::Result<Vec<_>>>()?;
+
+        let has_untagged_variants = variants.iter().any(|v| v.untagged);
+
+        // Without a container attribute the enum is externally tagged, which
+        // is only supported when untagged variants provide the fallback.
+        if !has_untagged_attr && tag_attr.is_none() && !has_untagged_variants {
+            return Err(syn::Error::new(
+                input.span(),
+                "UntaggedEnumDeserialize: can only be derived for enums with #[serde(untagged)] or #[serde(tag = \"...\")] attributes, or with at least one #[serde(untagged)] variant",
+            ));
+        }
+
+        // Untagged variants must come after all tagged variants (matching
+        // serde). In an untagged container every variant is effectively
+        // untagged, so the rule does not apply.
+        if !has_untagged_attr {
+            let mut seen_untagged = false;
+            for variant in &variants {
+                if variant.untagged {
+                    seen_untagged = true;
+                } else if seen_untagged {
+                    return Err(syn::Error::new(
+                        variant.ident.span(),
+                        "UntaggedEnumDeserialize: all variants with the #[serde(untagged)] attribute must be placed at the end of the enum",
+                    ));
+                }
+            }
+        }
+
         Ok(EnumDef {
             ident,
             generics,
             variants,
             tag: tag_attr,
+            untagged_container: has_untagged_attr,
             rename_all,
         })
     }
@@ -400,7 +545,7 @@ impl<'a> EnumDef<'a> {
         let mut variant_blocks = Vec::new();
         for variant in &self.variants {
             let deserialize_block = variant.gen_untagged_deserialize_block()?;
-            let constructor_block = variant.gen_constructor_block(enum_name)?;
+            let constructor_block = variant.gen_constructor_block(enum_name, None)?;
             variant_blocks.push(quote! {
                 #deserialize_block
                 #constructor_block
@@ -476,10 +621,148 @@ impl<'a> EnumDef<'a> {
         })
     }
 
+    /// Generates the impl for an internally-tagged enum that also has
+    /// untagged variants: a recognized tag is attempted first (with the tag
+    /// key stripped); any failure falls back to trying the untagged variants
+    /// in order against the full original value.
+    fn gen_mixed_tagged_impl(&self) -> syn::Result<proc_macro2::TokenStream> {
+        let enum_name = &self.ident;
+        let tag_key = self.tag.as_ref().expect("Expected tag key");
+        let generics = self.build_impl_generics();
+        let (impl_generics, _, where_clause) = generics.split_for_impl();
+        let (_, ty_generics, _) = self.generics.split_for_impl();
+
+        let mut tagged_arms = Vec::new();
+        let mut untagged_blocks = Vec::new();
+        for variant in &self.variants {
+            if variant.untagged {
+                let deserialize_block = variant.gen_untagged_deserialize_block()?;
+                let constructor_block = variant.gen_constructor_block(enum_name, Some(tag_key))?;
+                untagged_blocks.push(quote! {
+                    #deserialize_block
+                    #constructor_block
+                });
+            } else {
+                tagged_arms.push(variant.gen_mixed_tagged_arm(
+                    enum_name,
+                    tag_key,
+                    self.rename_all,
+                )?);
+            }
+        }
+
+        let err_message = format!("data did not match any variant of untagged enum {enum_name}");
+
+        Ok(quote! {
+            #[automatically_derived]
+            impl #impl_generics __serde::Deserialize<'de> for #enum_name #ty_generics #where_clause {
+                fn deserialize<__D>(deserializer: __D) -> Result<Self, __D::Error>
+                where
+                    __D: __serde::de::Deserializer<'de>,
+                {
+                    let (__tag, mut __state) = __serde_yaml::value::extract_optional_tag_and_deserializer_state(deserializer, #tag_key)?;
+                    let __unused_key_callback = __state.take_unused_key_callback();
+                    let mut __unused_keys = vec![];
+
+                    match __tag.as_ref().and_then(|__v| __v.as_str()) {
+                        #( #tagged_arms )*
+                        _ => {}
+                    }
+
+                    #( #untagged_blocks )*
+
+                    Err(__serde::de::Error::custom(#err_message))
+                }
+            }
+        })
+    }
+
+    /// Generates the impl for an externally-tagged enum (no container
+    /// attribute) with untagged variants: a recognized tag is attempted
+    /// first (against the inner content of the single-key mapping); any
+    /// failure falls back to trying the untagged variants in order against
+    /// the full original value.
+    fn gen_mixed_external_impl(&self) -> syn::Result<proc_macro2::TokenStream> {
+        let enum_name = &self.ident;
+        let generics = self.build_impl_generics();
+        let (impl_generics, _, where_clause) = generics.split_for_impl();
+        let (_, ty_generics, _) = self.generics.split_for_impl();
+
+        let mut bare_unit_arms = Vec::new();
+        let mut wrapped_arms = Vec::new();
+        let mut untagged_blocks = Vec::new();
+        for variant in &self.variants {
+            if variant.untagged {
+                let deserialize_block = variant.gen_untagged_deserialize_block()?;
+                let constructor_block = variant.gen_constructor_block(enum_name, None)?;
+                untagged_blocks.push(quote! {
+                    #deserialize_block
+                    #constructor_block
+                });
+            } else {
+                if let syn::Fields::Unit = variant.fields {
+                    let tag_name = variant.get_name(self.rename_all);
+                    let ident = &variant.ident;
+                    bare_unit_arms.push(quote! {
+                        Some(#tag_name) => return Ok(#enum_name::#ident),
+                    });
+                }
+                wrapped_arms.push(variant.gen_mixed_external_arm(enum_name, self.rename_all)?);
+            }
+        }
+
+        let tagged_variant_names: Vec<String> = self
+            .variants
+            .iter()
+            .filter(|v| !v.untagged)
+            .map(|v| v.get_name(self.rename_all))
+            .collect();
+
+        let err_message = format!("data did not match any variant of untagged enum {enum_name}");
+
+        Ok(quote! {
+            #[automatically_derived]
+            impl #impl_generics __serde::Deserialize<'de> for #enum_name #ty_generics #where_clause {
+                fn deserialize<__D>(deserializer: __D) -> Result<Self, __D::Error>
+                where
+                    __D: __serde::de::Deserializer<'de>,
+                {
+                    let (__tag, mut __state) = __serde_yaml::value::extract_external_tag_and_deserializer_state(deserializer, &[#( #tagged_variant_names ),*])?;
+                    let __unused_key_callback = __state.take_unused_key_callback();
+                    let mut __unused_keys = vec![];
+
+                    match __tag {
+                        Some(__serde_yaml::value::ExternalTag::Bare(__tag)) => {
+                            match __tag.as_str() {
+                                #( #bare_unit_arms )*
+                                _ => {}
+                            }
+                        }
+                        Some(__serde_yaml::value::ExternalTag::Wrapped(__tag)) => {
+                            match __tag.as_str() {
+                                #( #wrapped_arms )*
+                                _ => {}
+                            }
+                        }
+                        None => {}
+                    }
+
+                    #( #untagged_blocks )*
+
+                    Err(__serde::de::Error::custom(#err_message))
+                }
+            }
+        })
+    }
+
     fn gen_deserialize_impl(&self) -> syn::Result<proc_macro2::TokenStream> {
-        match self.tag {
-            Some(_) => self.gen_internally_tagged_impl(),
-            None => self.gen_untagged_impl(),
+        let has_untagged_variants = self.variants.iter().any(|v| v.untagged);
+        match (&self.tag, self.untagged_container, has_untagged_variants) {
+            (Some(_), _, true) => self.gen_mixed_tagged_impl(),
+            (Some(_), _, false) => self.gen_internally_tagged_impl(),
+            (None, true, _) => self.gen_untagged_impl(),
+            (None, false, true) => self.gen_mixed_external_impl(),
+            (None, false, false) => unreachable!("rejected by EnumDef::try_from_ast"),
         }
     }
 }
@@ -503,6 +786,25 @@ fn expand_derive_deserialize(
     Ok(block)
 }
 
+/// Derives `Deserialize` for an enum, with span preservation and unused-key
+/// forwarding, matching serde's behavior for mixed tagged/untagged enums.
+///
+/// Supported container attributes:
+///
+/// | Attribute | Mode |
+/// |---|---|
+/// | `#[serde(untagged)]` | Variants are tried in declaration order |
+/// | `#[serde(tag = "...")]` | Internally tagged; `#[serde(untagged)]` variants are the fallback |
+/// | *(none)* | Externally tagged; requires at least one `#[serde(untagged)]` variant as fallback |
+///
+/// The only variant attribute is `#[serde(untagged)]`; untagged variants must
+/// come after all tagged variants (matching serde). On any tagged-dispatch
+/// failure — unknown tag, missing tag, or a rejected variant body — the
+/// untagged variants are tried in order against the full original value.
+///
+/// Not supported: adjacent tagging (`tag` + `content`), other variant
+/// attributes (`rename`, `skip`, ...), inlined struct variants, and borrowed
+/// lifetimes.
 #[proc_macro_derive(UntaggedEnumDeserialize, attributes(serde))]
 pub fn derive_deserialize(input: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(input as DeriveInput);
@@ -510,4 +812,97 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
     expand_derive_deserialize(&mut input)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn expand(input: syn::DeriveInput) -> syn::Result<()> {
+        let mut input = input;
+        expand_derive_deserialize(&mut input).map(|_| ())
+    }
+
+    #[test]
+    fn untagged_variants_must_come_last() {
+        let input = syn::parse_quote! {
+            #[serde(tag = "type")]
+            enum E {
+                #[serde(untagged)]
+                A(i32),
+                B(String),
+            }
+        };
+        let err = expand(input).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("must be placed at the end of the enum"),
+            "unexpected error: {err}"
+        );
+
+        // Same rule without a container attribute.
+        let input = syn::parse_quote! {
+            enum E {
+                #[serde(untagged)]
+                A(i32),
+                B(String),
+            }
+        };
+        assert!(expand(input).is_err());
+    }
+
+    #[test]
+    fn external_mode_requires_an_untagged_variant() {
+        let input = syn::parse_quote! {
+            enum E {
+                A(i32),
+                B(String),
+            }
+        };
+        let err = expand(input).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("at least one #[serde(untagged)] variant"),
+            "unexpected error: {err}"
+        );
+
+        let input = syn::parse_quote! {
+            enum E {
+                A(i32),
+                #[serde(untagged)]
+                B(String),
+            }
+        };
+        assert!(expand(input).is_ok());
+    }
+
+    #[test]
+    fn only_untagged_is_supported_on_variants() {
+        let input = syn::parse_quote! {
+            #[serde(untagged)]
+            enum E {
+                #[serde(rename = "a")]
+                A(i32),
+            }
+        };
+        let err = expand(input).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("only #[serde(untagged)] is supported on variants"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn untagged_variant_attr_is_a_noop_in_untagged_container() {
+        let input = syn::parse_quote! {
+            #[serde(untagged)]
+            enum E {
+                #[serde(untagged)]
+                A(i32),
+                B(String),
+            }
+        };
+        assert!(expand(input).is_ok());
+    }
 }

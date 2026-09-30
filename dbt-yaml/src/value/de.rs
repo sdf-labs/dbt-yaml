@@ -446,6 +446,7 @@ fn clear_deserializer_state() {
     private::THE_PATH.with(|cell| cell.set(None));
     private::UNUSED_KEY_CALLBACK.with(|cell| cell.set(None));
     private::FIELD_TRANSFORMER.with(|cell| cell.set(None));
+    private::FROM_FLATTEN.with(|cell| cell.set(false));
 }
 
 /// Saves deserializer state to thread-local storage for extraction by
@@ -463,6 +464,7 @@ unsafe fn save_deserializer_state<'u, 'f>(
     path: Path<'_>,
     unused_key_callback: Option<OwnedUnusedKeyCallback<'u>>,
     field_transformer: Option<FieldTransformer<'f>>,
+    from_flatten: bool,
 ) {
     private::THE_VALUE.with(|cell| cell.set(value));
     private::THE_PATH.with(|cell| cell.set(Some(path.to_owned_path())));
@@ -481,6 +483,7 @@ unsafe fn save_deserializer_state<'u, 'f>(
             )
         })
     });
+    private::FROM_FLATTEN.with(|cell| cell.set(from_flatten));
 }
 
 /// Consumes a [Deserializer] and converts it into a [DeserializerState], which
@@ -542,12 +545,112 @@ where
     }
 }
 
+/// The externally-tagged form of an enum's input.
+///
+/// Returned by [`extract_external_tag_and_deserializer_state`].
+#[derive(Debug)]
+pub enum ExternalTag {
+    /// The input is a bare scalar: the value itself is the tag. Only unit
+    /// variants can match this form.
+    Bare(Value),
+    /// The input is a single-key mapping: the key is the tag and the inner
+    /// value is the variant's content.
+    Wrapped(Value),
+}
+
+/// Consumes a [Deserializer] and extracts the tag of an internally-tagged
+/// enum together with the reusable deserializer state, without removing the
+/// tag key from the state's mapping.
+///
+/// Returns a `None` tag when the input is not a mapping or the tag key is
+/// absent; the caller is expected to fall back to untagged variants in that
+/// case.
+pub fn extract_optional_tag_and_deserializer_state<'de, D>(
+    deserializer: D,
+    tag_key: &str,
+) -> Result<(Option<Value>, DeserializerState), D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let mut state = extract_reusable_deserializer_state(deserializer)?;
+    let Value::Mapping(map, ..) = &state.value else {
+        return Ok((None, state));
+    };
+    let Some(tag) = map.get(tag_key) else {
+        return Ok((None, state));
+    };
+    let mut tag = tag.clone();
+    if let Some(transformer) = &mut state.field_transformer {
+        if let Some(transformed) = transformer(&tag)
+            .map_err(|e| D::Error::custom(format!("Failed to transform tag: {e}")))?
+        {
+            tag = transformed;
+        }
+    }
+    Ok((Some(tag), state))
+}
+
+/// Consumes a [Deserializer] and extracts the tag of an externally-tagged
+/// enum together with the reusable deserializer state.
+///
+/// Returns a `None` tag when the input has no externally-tagged shape (not a
+/// bare scalar, not a single-key mapping); the caller is expected to fall
+/// back to untagged variants in that case.
+pub fn extract_external_tag_and_deserializer_state<'de, D>(
+    deserializer: D,
+    variant_names: &[&str],
+) -> Result<(Option<ExternalTag>, DeserializerState), D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let mut state = extract_reusable_deserializer_state(deserializer)?;
+    let tag = match &state.value {
+        // The tag of a wrapped variant is a mapping key; keys are not subject
+        // to field transformation, so the key is returned untransformed.
+        Value::Mapping(map, ..) => {
+            let key = if map.len() == 1 {
+                Some(map.iter().next().expect("len checked").0)
+            } else if state.from_flatten {
+                // The mapping is a flatten field's leftover keys, so the tag
+                // is one of several keys: the first one that names a variant,
+                // matching serde's FlatMapDeserializer.
+                map.iter()
+                    .map(|(k, _)| k)
+                    .find(|k| k.as_str().is_some_and(|s| variant_names.contains(&s)))
+            } else {
+                None
+            };
+            match key {
+                Some(key) if key.as_str().is_some() => Some(ExternalTag::Wrapped(key.clone())),
+                _ => None,
+            }
+        }
+        Value::String(..) => {
+            let mut tag = state.value.clone();
+            if let Some(transformer) = &mut state.field_transformer {
+                if let Some(transformed) = transformer(&tag)
+                    .map_err(|e| D::Error::custom(format!("Failed to transform tag: {e}")))?
+                {
+                    tag = transformed;
+                }
+            }
+            Some(ExternalTag::Bare(tag))
+        }
+        _ => None,
+    };
+    Ok((tag, state))
+}
+
 /// Captures the state of a [Value] deserializer
 pub struct DeserializerState {
     value: Value,
     path: OwnedPath,
     unused_key_callback: Option<OwnedUnusedKeyCallback<'static>>,
     field_transformer: Option<FieldTransformer<'static>>,
+    /// Whether the value was saved from a flatten field's leftover keys, in
+    /// which case externally-tagged dispatch may look the tag up among
+    /// multiple mapping keys (matching serde's `FlatMapDeserializer`).
+    from_flatten: bool,
 }
 
 impl DeserializerState {
@@ -563,6 +666,7 @@ impl DeserializerState {
             path,
             unused_key_callback,
             field_transformer,
+            from_flatten: false,
         }
     }
 
@@ -600,9 +704,150 @@ impl DeserializerState {
         )
     }
 
+    /// Returns the path to the captured value.
+    pub fn path(&self) -> Path<'_> {
+        *self.path.as_path()
+    }
+
+    /// Returns true if `path` points at `key` directly under the state's own
+    /// path.
+    pub fn is_direct_child(&self, path: &OwnedPath, key: &str) -> bool {
+        match path.as_path() {
+            Path::Map { parent, key: k } => {
+                *k == key && (*parent).to_string() == self.path.as_path().to_string()
+            }
+            _ => false,
+        }
+    }
+
     /// Extracts the unused key callback from the state, if any.
     pub fn take_unused_key_callback(&mut self) -> Option<OwnedUnusedKeyCallback<'static>> {
         self.unused_key_callback.take()
+    }
+
+    /// Removes `tag_key` from the state's mapping value, returning the
+    /// removed entry's index, key, and value.
+    ///
+    /// Used by internally-tagged enum dispatch: the tagged variant is
+    /// deserialized from the mapping minus the tag key, while an untagged
+    /// fallback must see the original mapping. Callers that fall back must
+    /// pass the returned entry to [`Self::restore_tag_key`].
+    ///
+    /// Returns `None` without modification when the value is not a mapping or
+    /// the key is absent.
+    pub fn strip_tag_key(&mut self, tag_key: &str) -> Option<(usize, Value, Value)> {
+        match &mut self.value {
+            Value::Mapping(map, ..) => {
+                let index = map.get_index_of(tag_key)?;
+                let (key, value) = map.shift_remove_entry(tag_key).expect("index found");
+                Some((index, key, value))
+            }
+            _ => None,
+        }
+    }
+
+    /// Re-inserts an entry removed by [`Self::strip_tag_key`] at its original
+    /// position.
+    pub fn restore_tag_key(&mut self, entry: (usize, Value, Value)) {
+        if let Value::Mapping(map, ..) = &mut self.value {
+            let (index, key, value) = entry;
+            map.shift_insert(index.min(map.len()), key, value);
+        }
+    }
+
+    /// If the state's value is a mapping containing `tag`, removes the entry,
+    /// replaces the state's value with the entry's content, and extends the
+    /// path with `tag`. Returns the original value (without the entry) and
+    /// the removed key.
+    ///
+    /// Used by externally-tagged enum dispatch: the tagged variant is
+    /// deserialized from the content, while an untagged fallback must see the
+    /// original mapping. Callers that fall back must pass the returned pair
+    /// to [`Self::restore_external_content`]; on success, call
+    /// [`Self::release_external_content`] to keep only the sibling entries.
+    ///
+    /// Returns `None` without modification when the value is not a mapping or
+    /// `tag` is absent.
+    pub fn focus_external_content(&mut self, tag: &str) -> Option<(Value, usize, Value)> {
+        let Value::Mapping(map, ..) = &mut self.value else {
+            return None;
+        };
+        let index = map.get_index_of(tag)?;
+        let (key, content) = map.shift_remove_entry(tag).expect("index found");
+
+        let old_value = std::mem::replace(&mut self.value, content);
+        let old_path = std::mem::replace(&mut self.path, OwnedPath::Root);
+        self.path = OwnedPath::Map {
+            parent: Box::new(old_path),
+            key: tag.to_string(),
+            borrowed: std::cell::OnceCell::new(),
+        };
+        Some((old_value, index, key))
+    }
+
+    /// Forwards every mapping entry except `tag_key` to `callback`, with
+    /// paths as direct children of the state's path.
+    ///
+    /// Used after a successful externally-tagged dispatch under flatten: the
+    /// sibling entries of the tag key are the flatten field's other leftover
+    /// keys, which belong to subsequent flatten fields.
+    pub fn forward_sibling_keys(
+        &mut self,
+        tag_key: &str,
+        callback: &mut dyn for<'p, 'v> FnMut(Path<'p>, &'v Value, &'v Value),
+    ) {
+        let Value::Mapping(map, ..) = &self.value else {
+            return;
+        };
+        for (key, value) in map.iter() {
+            let Some(key_str) = key.as_str() else {
+                continue;
+            };
+            if key_str == tag_key {
+                continue;
+            }
+            let path = Path::Map {
+                parent: self.path.as_path(),
+                key: key_str,
+            };
+            callback(path, key, value);
+        }
+    }
+
+    /// Restores the value and path replaced by
+    /// [`Self::focus_external_content`], re-inserting the removed entry at
+    /// its original position (the state's current value becomes the entry's
+    /// content again).
+    pub fn restore_external_content(&mut self, mut original: Value, index: usize, key: Value) {
+        let content = std::mem::take(&mut self.value);
+        if let Value::Mapping(map, ..) = &mut original {
+            map.shift_insert(index.min(map.len()), key, content);
+        }
+        self.value = original;
+        self.unwrap_focused_path();
+    }
+
+    /// Restores the value and path replaced by
+    /// [`Self::focus_external_content`] without the removed entry, dropping
+    /// the focused content.
+    ///
+    /// Used after a successful externally-tagged dispatch: the content was
+    /// consumed by the variant; the sibling entries of the tag key remain for
+    /// [`Self::forward_sibling_keys`].
+    pub fn release_external_content(&mut self, original: Value) {
+        self.value = original;
+        self.unwrap_focused_path();
+    }
+
+    fn unwrap_focused_path(&mut self) {
+        let focused = std::mem::replace(&mut self.path, OwnedPath::Root);
+        self.path = match focused {
+            OwnedPath::Map { parent, .. } => *parent,
+            other => {
+                debug_assert!(false, "restore_external_content without focus");
+                other
+            }
+        };
     }
 }
 
@@ -616,12 +861,14 @@ unsafe fn load_deserializer_state() -> Option<DeserializerState> {
         .unwrap_or(OwnedPath::Root);
     let unused_key_callback = private::UNUSED_KEY_CALLBACK.with(|cell| cell.take());
     let field_transformer = private::FIELD_TRANSFORMER.with(|cell| cell.take());
+    let from_flatten = private::FROM_FLATTEN.with(|cell| cell.take());
 
     Some(DeserializerState {
         value,
         path,
         unused_key_callback,
         field_transformer,
+        from_flatten,
     })
 }
 
@@ -639,5 +886,6 @@ mod private {
         pub static FIELD_TRANSFORMER: std::cell::Cell<Option<super::FieldTransformer<'static>>> = std::cell::Cell::new(
             None
         );
+        pub static FROM_FLATTEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 }
