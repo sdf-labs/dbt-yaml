@@ -1,12 +1,19 @@
-use dbt_yaml::StringNode;
+use dbt_yaml::{Span, StringNode};
 use indoc::indoc;
 
 fn scalar(s: &str) -> StringNode {
-    StringNode::Scalar(s.to_owned())
+    StringNode::Scalar(s.to_owned(), Span::zero())
+}
+
+fn sequence(items: Vec<StringNode>) -> StringNode {
+    StringNode::Sequence(items, Span::zero())
 }
 
 fn mapping(pairs: Vec<(&str, StringNode)>) -> StringNode {
-    StringNode::Mapping(pairs.into_iter().map(|(k, v)| (scalar(k), v)).collect())
+    StringNode::Mapping(
+        pairs.into_iter().map(|(k, v)| (scalar(k), v)).collect(),
+        Span::zero(),
+    )
 }
 
 #[test]
@@ -72,7 +79,7 @@ fn test_nested_structure() {
         ("version", scalar("0.10.5")),
         (
             "features",
-            StringNode::Sequence(vec![scalar("filename"), scalar("yaml_11")]),
+            sequence(vec![scalar("filename"), scalar("yaml_11")]),
         ),
         (
             "matrix",
@@ -94,10 +101,10 @@ fn test_numeric_mapping_key_stays_string() {
 #[test]
 fn test_non_scalar_mapping_key() {
     let yaml = "? [a, b]\n: pair key\n";
-    let expected = StringNode::Mapping(vec![(
-        StringNode::Sequence(vec![scalar("a"), scalar("b")]),
-        scalar("pair key"),
-    )]);
+    let expected = StringNode::Mapping(
+        vec![(sequence(vec![scalar("a"), scalar("b")]), scalar("pair key"))],
+        Span::zero(),
+    );
     assert_eq!(StringNode::from_str(yaml).unwrap(), expected);
 }
 
@@ -107,9 +114,9 @@ fn test_flow_style() {
     let expected = mapping(vec![
         (
             "a",
-            StringNode::Sequence(vec![scalar("1"), mapping(vec![("b", scalar("2"))])]),
+            sequence(vec![scalar("1"), mapping(vec![("b", scalar("2"))])]),
         ),
-        ("c", StringNode::Sequence(vec![])),
+        ("c", sequence(vec![])),
     ]);
     assert_eq!(StringNode::from_str(yaml).unwrap(), expected);
 }
@@ -128,10 +135,13 @@ fn test_alias() {
         ("defaults", defaults.clone()),
         (
             "service",
-            StringNode::Mapping(vec![
-                (scalar("<<"), defaults),
-                (scalar("host"), scalar("localhost")),
-            ]),
+            StringNode::Mapping(
+                vec![
+                    (scalar("<<"), defaults),
+                    (scalar("host"), scalar("localhost")),
+                ],
+                Span::zero(),
+            ),
         ),
     ]);
     assert_eq!(StringNode::from_str(yaml).unwrap(), expected);
@@ -166,4 +176,85 @@ fn test_from_slice_and_reader() {
     let expected = mapping(vec![("k", scalar("0x10"))]);
     assert_eq!(StringNode::from_slice(yaml.as_bytes()).unwrap(), expected);
     assert_eq!(StringNode::from_reader(yaml.as_bytes()).unwrap(), expected);
+}
+
+#[test]
+fn test_spans() {
+    let yaml = indoc! {"
+        name: dbt-yaml
+        features:
+          - filename
+          - yaml_11
+    "};
+    let node = StringNode::from_str(yaml).unwrap();
+
+    // The top-level mapping spans the whole document.
+    assert_eq!(
+        (node.span().start.line, node.span().start.column),
+        (1, 1)
+    );
+    assert_eq!((node.span().end.line, node.span().end.column), (5, 1));
+
+    let StringNode::Mapping(pairs, _) = &node else {
+        panic!("expected mapping");
+    };
+
+    // The "name" key runs to the start of its value.
+    let (key, value) = &pairs[0];
+    assert_eq!((key.span().start.line, key.span().start.column), (1, 1));
+    assert_eq!((key.span().end.line, key.span().end.column), (1, 7));
+    assert_eq!(
+        (value.span().start.line, value.span().start.column),
+        (1, 7)
+    );
+    assert_eq!((value.span().end.line, value.span().end.column), (2, 1));
+
+    // The "features" sequence starts at the first `-` entry and runs to the
+    // end of the document.
+    let (key, value) = &pairs[1];
+    assert_eq!((key.span().start.line, key.span().start.column), (2, 1));
+    let StringNode::Sequence(items, seq_span) = value else {
+        panic!("expected sequence");
+    };
+    assert_eq!((seq_span.start.line, seq_span.start.column), (3, 3));
+    assert_eq!((seq_span.end.line, seq_span.end.column), (5, 1));
+    assert_eq!(
+        (items[0].span().start.line, items[0].span().start.column),
+        (3, 5)
+    );
+    assert_eq!(
+        (items[0].span().end.line, items[0].span().end.column),
+        (4, 5)
+    );
+}
+
+#[test]
+fn test_span_of_empty_document() {
+    let node = StringNode::from_str("").unwrap();
+    assert_eq!(
+        (node.span().start.line, node.span().start.column),
+        (1, 1)
+    );
+}
+
+#[test]
+fn test_alias_span_is_alias_reference() {
+    let yaml = indoc! {"
+        defaults: &defaults
+          port: 5432
+        service: *defaults
+    "};
+    let node = StringNode::from_str(yaml).unwrap();
+    let StringNode::Mapping(pairs, _) = &node else {
+        panic!("expected mapping");
+    };
+    let (_, aliased) = &pairs[1];
+    let StringNode::Mapping(aliased_pairs, _) = aliased else {
+        panic!("expected mapping");
+    };
+    assert_eq!(aliased_pairs[0].0, scalar("port"));
+    assert_eq!(
+        (aliased.span().start.line, aliased.span().start.column),
+        (3, 10)
+    );
 }

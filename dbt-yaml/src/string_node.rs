@@ -1,39 +1,46 @@
 //! A structural representation of a YAML document in which every scalar is
 //! kept as a [`String`], without applying YAML's implicit type resolution.
 //!
-//! Unlike [`Value`](crate::Value), which resolves plain scalars to null,
-//! bool, or number according to the YAML core schema, [`StringNode`]
-//! preserves the scalar text exactly as parsed: `0x10` stays `"0x10"`, `~`
-//! stays `"~"`, and so on. Node structure (sequence vs mapping vs scalar) is
-//! taken from the parser's event stream, so no schema is required.
+//! Unlike [`Value`](crate::Value), which resolves plain scalars to null, bool,
+//! or number according to the YAML core schema, [`StringNode`] preserves the
+//! scalar text exactly as parsed: `0x10` stays `"0x10"`, `~` stays `"~"`, and
+//! so on. Node structure (sequence vs mapping vs scalar) is taken from the
+//! parser's event stream, so no schema is required. Tags and scalar styles are
+//! discarded: a scalar node's value is the scalar's content after the parser
+//! has processed quoting and escape sequences.
 //!
-//! Tags and scalar styles are discarded: a scalar node's value is the
-//! scalar's content after the parser has processed quoting and escape
-//! sequences.
+//! Like [`Value`](crate::Value), every node also carries the [`Span`] of the
+//! source region it was parsed from; see [`StringNode::span`]. Spans are
+//! metadata only: they do not take part in equality or hashing.
 
 use crate::de::{Event, Progress};
 use crate::error::{self, ErrorImpl, Result};
 use crate::libyaml::error::Mark;
 use crate::loader::{Document, Loader};
 use crate::path::Path;
-use crate::spanned;
+use crate::{spanned, Marker, Span};
+use std::hash::{Hash, Hasher};
 use std::io;
+use std::mem;
 use std::sync::Arc;
 
 /// A YAML node in which every scalar is kept as a string.
 ///
 /// See the [module-level documentation](self) for details.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub enum StringNode {
     /// A scalar node. The string is the scalar's content as parsed, with no
     /// implicit type resolution applied. An empty document is represented as
-    /// `Scalar("")`.
-    Scalar(String),
-    /// A sequence node, in document order.
-    Sequence(Vec<StringNode>),
+    /// `Scalar("")`. The span covers the scalar in the source.
+    Scalar(String, Span),
+    /// A sequence node, in document order. The span covers the sequence from
+    /// its first token to the start of the next node in the source.
+    Sequence(Vec<StringNode>, Span),
     /// A mapping node, as key-value pairs in document order. Keys are full
-    /// nodes because YAML permits non-scalar mapping keys.
-    Mapping(Vec<(StringNode, StringNode)>),
+    /// nodes because YAML permits non-scalar mapping keys. The span covers
+    /// the mapping from its first token to the start of the next node in the
+    /// source.
+    Mapping(Vec<(StringNode, StringNode)>, Span),
 }
 
 impl StringNode {
@@ -56,6 +63,53 @@ impl StringNode {
         R: io::Read,
     {
         parse(Progress::Read(Box::new(rdr)))
+    }
+
+    /// Returns the recorded source [`Span`] of this node.
+    ///
+    /// The span runs from the node's first token to the start of the next
+    /// node in the source. A node produced from an alias carries the span of
+    /// the alias reference, not of the anchored definition.
+    pub fn span(&self) -> &Span {
+        match self {
+            StringNode::Scalar(_, span)
+            | StringNode::Sequence(_, span)
+            | StringNode::Mapping(_, span) => span,
+        }
+    }
+
+    fn set_span(&mut self, span: Span) {
+        match self {
+            StringNode::Scalar(_, s)
+            | StringNode::Sequence(_, s)
+            | StringNode::Mapping(_, s) => *s = span,
+        }
+    }
+}
+
+impl PartialEq for StringNode {
+    /// Two nodes are equal if their structure and scalar contents are equal.
+    /// Spans do not take part in equality.
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (StringNode::Scalar(a, _), StringNode::Scalar(b, _)) => a == b,
+            (StringNode::Sequence(a, _), StringNode::Sequence(b, _)) => a == b,
+            (StringNode::Mapping(a, _), StringNode::Mapping(b, _)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for StringNode {}
+
+impl Hash for StringNode {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        mem::discriminant(self).hash(state);
+        match self {
+            StringNode::Scalar(v, _) => v.hash(state),
+            StringNode::Sequence(v, _) => v.hash(state),
+            StringNode::Mapping(v, _) => v.hash(state),
+        }
     }
 }
 
@@ -125,15 +179,17 @@ impl<'document, 'de> Builder<'document, 'de> {
 
     fn build(&mut self) -> Result<StringNode> {
         let (event, mark) = self.next_event_mark()?;
-        match event {
-            Event::Void => Ok(StringNode::Scalar(String::new())),
+        let mut node = match event {
+            Event::Void => StringNode::Scalar(String::new(), Span::zero()),
             Event::Scalar(scalar) => match String::from_utf8(scalar.value.to_vec()) {
-                Ok(v) => Ok(StringNode::Scalar(v)),
-                Err(err) => Err(error::fix_mark(
-                    error::new(ErrorImpl::FromUtf8(err)),
-                    mark,
-                    Path::Root,
-                )),
+                Ok(v) => StringNode::Scalar(v, Span::zero()),
+                Err(err) => {
+                    return Err(error::fix_mark(
+                        error::new(ErrorImpl::FromUtf8(err)),
+                        mark,
+                        Path::Root,
+                    ));
+                }
             },
             Event::Alias(id) => {
                 self.jumpcount += 1;
@@ -146,7 +202,7 @@ impl<'document, 'de> Builder<'document, 'de> {
                         self.pos = *found;
                         let result = self.build();
                         self.pos = saved;
-                        result
+                        result?
                     }
                     None => panic!("unresolved alias: {}", *id),
                 }
@@ -162,7 +218,7 @@ impl<'document, 'de> Builder<'document, 'de> {
                         _ => items.push(self.build_nested(mark)?),
                     }
                 }
-                Ok(StringNode::Sequence(items))
+                StringNode::Sequence(items, Span::zero())
             }
             Event::MappingStart(_) => {
                 let mut pairs = Vec::new();
@@ -179,10 +235,24 @@ impl<'document, 'de> Builder<'document, 'de> {
                         }
                     }
                 }
-                Ok(StringNode::Mapping(pairs))
+                StringNode::Mapping(pairs, Span::zero())
             }
             Event::SequenceEnd => panic!("unexpected end of sequence"),
             Event::MappingEnd => panic!("unexpected end of mapping"),
-        }
+        };
+
+        let start = Marker::from(mark);
+        // The end of a node is the start of the next unconsumed event. At the
+        // end of the event stream there is no next event, so the span closes
+        // at its own start.
+        let end = match self.document.events.get(self.pos) {
+            Some((_, mark)) => Marker::from(*mark),
+            None => start,
+        };
+        let span = Span::new(start, end);
+        #[cfg(feature = "filename")]
+        let span = span.maybe_capture_filename();
+        node.set_span(span);
+        Ok(node)
     }
 }
