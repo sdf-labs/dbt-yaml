@@ -5,9 +5,10 @@
 //! or number according to the YAML core schema, [`StringNode`] preserves the
 //! scalar text exactly as parsed: `0x10` stays `"0x10"`, `~` stays `"~"`, and
 //! so on. Node structure (sequence vs mapping vs scalar) is taken from the
-//! parser's event stream, so no schema is required. Tags and scalar styles are
-//! discarded: a scalar node's value is the scalar's content after the parser
-//! has processed quoting and escape sequences.
+//! parser's event stream, so no schema is required. Explicit quotes
+//! differentiate [`StringNode::QuotedScalar`] from bare [`StringNode::Scalar`].
+//! Tags and block scalar styles are discarded: a scalar node's value is the
+//! content after the parser processes quotes and escape sequences.
 //!
 //! Like [`Value`](crate::Value), every node also carries the [`Span`] of the
 //! source region it was parsed from; see [`StringNode::span`]. Spans are
@@ -16,6 +17,7 @@
 use crate::de::{Event, Progress};
 use crate::error::{self, ErrorImpl, Result};
 use crate::libyaml::error::Mark;
+use crate::libyaml::parser::ScalarStyle;
 use crate::loader::{Document, Loader};
 use crate::path::Path;
 use crate::{spanned, Marker, Span};
@@ -33,6 +35,9 @@ pub enum StringNode {
     /// implicit type resolution applied. An empty document is represented as
     /// `Scalar("")`. The span covers the scalar in the source.
     Scalar(String, Span),
+    /// A quoted scalar node. Like [`Scalar`](Self::Scalar), but the source
+    /// text was explicitly quoted. The span covers the scalar in the source.
+    QuotedScalar(String, Span),
     /// A sequence node, in document order. The span covers the sequence from
     /// its first token to the start of the next node in the source.
     Sequence(Vec<StringNode>, Span),
@@ -73,6 +78,7 @@ impl StringNode {
     pub fn span(&self) -> &Span {
         match self {
             StringNode::Scalar(_, span)
+            | StringNode::QuotedScalar(_, span)
             | StringNode::Sequence(_, span)
             | StringNode::Mapping(_, span) => span,
         }
@@ -81,6 +87,7 @@ impl StringNode {
     fn set_span(&mut self, span: Span) {
         match self {
             StringNode::Scalar(_, s)
+            | StringNode::QuotedScalar(_, s)
             | StringNode::Sequence(_, s)
             | StringNode::Mapping(_, s) => *s = span,
         }
@@ -93,6 +100,7 @@ impl PartialEq for StringNode {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (StringNode::Scalar(a, _), StringNode::Scalar(b, _)) => a == b,
+            (StringNode::QuotedScalar(a, _), StringNode::QuotedScalar(b, _)) => a == b,
             (StringNode::Sequence(a, _), StringNode::Sequence(b, _)) => a == b,
             (StringNode::Mapping(a, _), StringNode::Mapping(b, _)) => a == b,
             _ => false,
@@ -106,7 +114,7 @@ impl Hash for StringNode {
     fn hash<H: Hasher>(&self, state: &mut H) {
         mem::discriminant(self).hash(state);
         match self {
-            StringNode::Scalar(v, _) => v.hash(state),
+            StringNode::Scalar(v, _) | StringNode::QuotedScalar(v, _) => v.hash(state),
             StringNode::Sequence(v, _) => v.hash(state),
             StringNode::Mapping(v, _) => v.hash(state),
         }
@@ -182,7 +190,12 @@ impl<'document, 'de> Builder<'document, 'de> {
         let mut node = match event {
             Event::Void => StringNode::Scalar(String::new(), Span::zero()),
             Event::Scalar(scalar) => match String::from_utf8(scalar.value.to_vec()) {
-                Ok(v) => StringNode::Scalar(v, Span::zero()),
+                Ok(v) => match scalar.style {
+                    ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted => {
+                        StringNode::QuotedScalar(v, Span::zero())
+                    }
+                    _ => StringNode::Scalar(v, Span::zero()),
+                },
                 Err(err) => {
                     return Err(error::fix_mark(
                         error::new(ErrorImpl::FromUtf8(err)),

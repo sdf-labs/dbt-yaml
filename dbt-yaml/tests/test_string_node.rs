@@ -5,6 +5,10 @@ fn scalar(s: &str) -> StringNode {
     StringNode::Scalar(s.to_owned(), Span::zero())
 }
 
+fn quoted_scalar(s: &str) -> StringNode {
+    StringNode::QuotedScalar(s.to_owned(), Span::zero())
+}
+
 fn sequence(items: Vec<StringNode>) -> StringNode {
     StringNode::Sequence(items, Span::zero())
 }
@@ -47,19 +51,77 @@ fn test_empty_document() {
 
 #[test]
 fn test_quoted_scalars() {
-    assert_eq!(StringNode::from_str("'123'").unwrap(), scalar("123"));
+    assert_eq!(StringNode::from_str("'123'").unwrap(), quoted_scalar("123"));
     // The parser resolves escape sequences in double-quoted scalars.
-    assert_eq!(StringNode::from_str("\"a\\nb\"").unwrap(), scalar("a\nb"));
+    assert_eq!(
+        StringNode::from_str("\"a\\nb\"").unwrap(),
+        quoted_scalar("a\nb")
+    );
+    assert_eq!(StringNode::from_str("''").unwrap(), quoted_scalar(""));
+    assert_eq!(StringNode::from_str("\"\"").unwrap(), quoted_scalar(""));
     assert_eq!(
         StringNode::from_str("|\n  literal\n").unwrap(),
         scalar("literal\n")
     );
+    assert_eq!(
+        StringNode::from_str(">\n  folded\n").unwrap(),
+        scalar("folded\n")
+    );
+}
+
+#[test]
+fn test_quoted_differs_from_bare_scalar() {
+    let bare = StringNode::from_str("hello").unwrap();
+    let single_quoted = StringNode::from_str("'hello'").unwrap();
+    let double_quoted = StringNode::from_str("\"hello\"").unwrap();
+
+    assert_eq!(bare, scalar("hello"));
+    assert_eq!(single_quoted, quoted_scalar("hello"));
+    assert_eq!(double_quoted, quoted_scalar("hello"));
+
+    assert_ne!(bare, single_quoted);
+    assert_ne!(bare, double_quoted);
+    assert_eq!(single_quoted, double_quoted);
+
+    use std::collections::HashSet;
+    let mut set = HashSet::new();
+    set.insert(bare);
+    assert!(!set.contains(&single_quoted));
+    assert!(set.contains(&scalar("hello")));
+    assert!(!set.contains(&quoted_scalar("hello")));
+}
+
+#[test]
+fn test_quoted_scalar_span() {
+    let yaml = "\"hello\"\n";
+    let node = StringNode::from_str(yaml).unwrap();
+    assert_eq!((node.span().start.line, node.span().start.column), (1, 1));
+    assert_eq!((node.span().end.line, node.span().end.column), (2, 1));
+
+    let yaml = "key: 'value'\n";
+    let node = StringNode::from_str(yaml).unwrap();
+    let StringNode::Mapping(pairs, _) = &node else {
+        panic!("expected mapping");
+    };
+    let (key, value) = &pairs[0];
+    assert_eq!(*key, scalar("key"));
+    assert_eq!(*value, quoted_scalar("value"));
+    assert_eq!((value.span().start.line, value.span().start.column), (1, 6));
+    assert_eq!((value.span().end.line, value.span().end.column), (2, 1));
 }
 
 #[test]
 fn test_tagged_scalar_stays_string() {
     assert_eq!(StringNode::from_str("!!int 42").unwrap(), scalar("42"));
     assert_eq!(StringNode::from_str("!custom foo").unwrap(), scalar("foo"));
+    assert_eq!(
+        StringNode::from_str("!!str \"42\"").unwrap(),
+        quoted_scalar("42")
+    );
+    assert_eq!(
+        StringNode::from_str("!custom \"foo\"").unwrap(),
+        quoted_scalar("foo")
+    );
 }
 
 #[test]
