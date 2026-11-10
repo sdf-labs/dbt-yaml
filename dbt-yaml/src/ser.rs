@@ -7,7 +7,7 @@ use crate::libyaml;
 use crate::libyaml::emitter::{Emitter, Event, Mapping, Scalar, ScalarStyle, Sequence};
 use crate::value::tagged::{self, MaybeTag};
 use serde::de::Visitor;
-use serde::ser::{self, Serializer as _};
+use serde::ser;
 use std::fmt::{self, Display};
 use std::io;
 use std::marker::PhantomData;
@@ -15,9 +15,17 @@ use std::mem;
 use std::num;
 use std::str;
 
+#[cfg(feature = "flatten_dunder")]
+mod flatten;
+
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// A structure for serializing Rust values into YAML.
+///
+/// With the `flatten_dunder` feature, dunder fields are flattened as described
+/// for [`to_writer`], except that keys repeated by the top-level value itself
+/// are written twice: only nested values are checked for repeats before they
+/// are written.
 ///
 /// # Example
 ///
@@ -46,6 +54,20 @@ pub struct Serializer<W> {
     state: State,
     emitter: Emitter<'static>,
     writer: PhantomData<W>,
+    /// One entry per open struct: the plan of entries to skip, if any, and
+    /// the index of the struct's next entry; see [`flatten`].
+    #[cfg(feature = "flatten_dunder")]
+    plans: Vec<Option<(crate::probe::Plan, usize)>>,
+    /// Hands a plan from the place that can probe a value to the place that
+    /// writes it. Only `serialize_child` holds `&value`, so it probes and
+    /// stores the plan here before calling `value.serialize(self)`. The
+    /// derived impl then calls `serialize_struct(name, len)`, which gets no
+    /// value but is where the struct's state starts: `push_plan` takes the
+    /// plan from here onto `plans`. A serializer is taken by value, so that
+    /// call comes first and nothing else can refill this slot in between;
+    /// each nested value refills it in its own `serialize_child`.
+    #[cfg(feature = "flatten_dunder")]
+    next_plan: Option<crate::probe::Plan>,
 }
 
 enum State {
@@ -72,6 +94,10 @@ where
             state: State::NothingInParticular,
             emitter,
             writer: PhantomData,
+            #[cfg(feature = "flatten_dunder")]
+            plans: Vec::new(),
+            #[cfg(feature = "flatten_dunder")]
+            next_plan: None,
         }
     }
 
@@ -163,6 +189,37 @@ where
             self.state = State::NothingInParticular;
         }
         Ok(())
+    }
+
+    /// Serializes a value nested in the current one. With `flatten_dunder`
+    /// the value is probed first, so that a struct knows which of its
+    /// flattened entries are overwritten by later ones.
+    fn serialize_child<V>(&mut self, value: &V) -> Result<()>
+    where
+        V: ?Sized + ser::Serialize,
+    {
+        #[cfg(feature = "flatten_dunder")]
+        {
+            self.next_plan = crate::probe::plan_for(value);
+        }
+        value.serialize(self)
+    }
+
+    fn serialize_struct_field<V>(&mut self, key: &'static str, value: &V) -> Result<()>
+    where
+        V: ?Sized + ser::Serialize,
+    {
+        #[cfg(feature = "flatten_dunder")]
+        {
+            if crate::is_flatten_key(key.as_bytes()) {
+                return value.serialize(flatten::FlattenSerializer { ser: self });
+            }
+            if self.skip_entry(|| crate::probe::Key::Static(key))? {
+                return Ok(());
+            }
+        }
+        ser::Serializer::serialize_str(&mut *self, key)?;
+        self.serialize_child(value)
     }
 }
 
@@ -424,7 +481,7 @@ where
                 style: ScalarStyle::Plain,
             });
         }
-        value.serialize(self)
+        self.serialize_child(value)
     }
 
     fn serialize_newtype_variant<T>(
@@ -441,7 +498,7 @@ where
             return Err(error::new(ErrorImpl::SerializeNestedEnum));
         }
         self.state = State::FoundTag(variant.to_owned());
-        value.serialize(&mut *self)
+        self.serialize_child(value)
     }
 
     fn serialize_none(self) -> Result<()> {
@@ -452,7 +509,7 @@ where
     where
         V: ?Sized + ser::Serialize,
     {
-        value.serialize(self)
+        self.serialize_child(value)
     }
 
     fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq> {
@@ -503,7 +560,11 @@ where
         Ok(self)
     }
 
-    fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
+    fn serialize_struct(self, name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
+        #[cfg(feature = "flatten_dunder")]
+        self.push_plan(name, len)?;
+        #[cfg(not(feature = "flatten_dunder"))]
+        let _ = (name, len);
         self.emit_mapping_start()?;
         Ok(self)
     }
@@ -513,11 +574,15 @@ where
         _enm: &'static str,
         _idx: u32,
         variant: &'static str,
-        _len: usize,
+        len: usize,
     ) -> Result<Self::SerializeStructVariant> {
         if let State::FoundTag(_) = self.state {
             return Err(error::new(ErrorImpl::SerializeNestedEnum));
         }
+        #[cfg(feature = "flatten_dunder")]
+        self.push_plan(variant, len)?;
+        #[cfg(not(feature = "flatten_dunder"))]
+        let _ = len;
         self.state = State::FoundTag(variant.to_owned());
         self.emit_mapping_start()?;
         Ok(self)
@@ -558,7 +623,7 @@ where
     where
         T: ?Sized + ser::Serialize,
     {
-        elem.serialize(&mut **self)
+        self.serialize_child(elem)
     }
 
     fn end(self) -> Result<()> {
@@ -577,7 +642,7 @@ where
     where
         T: ?Sized + ser::Serialize,
     {
-        elem.serialize(&mut **self)
+        self.serialize_child(elem)
     }
 
     fn end(self) -> Result<()> {
@@ -596,7 +661,7 @@ where
     where
         V: ?Sized + ser::Serialize,
     {
-        value.serialize(&mut **self)
+        self.serialize_child(value)
     }
 
     fn end(self) -> Result<()> {
@@ -615,7 +680,7 @@ where
     where
         V: ?Sized + ser::Serialize,
     {
-        v.serialize(&mut **self)
+        self.serialize_child(v)
     }
 
     fn end(self) -> Result<()> {
@@ -635,14 +700,14 @@ where
         T: ?Sized + ser::Serialize,
     {
         self.flush_mapping_start()?;
-        key.serialize(&mut **self)
+        self.serialize_child(key)
     }
 
     fn serialize_value<T>(&mut self, value: &T) -> Result<()>
     where
         T: ?Sized + ser::Serialize,
     {
-        value.serialize(&mut **self)
+        self.serialize_child(value)
     }
 
     fn serialize_entry<K, V>(&mut self, key: &K, value: &V) -> Result<(), Self::Error>
@@ -650,9 +715,9 @@ where
         K: ?Sized + ser::Serialize,
         V: ?Sized + ser::Serialize,
     {
-        key.serialize(&mut **self)?;
+        self.serialize_child(key)?;
         let tagged = matches!(self.state, State::FoundTag(_));
-        value.serialize(&mut **self)?;
+        self.serialize_child(value)?;
         if tagged {
             self.state = State::AlreadyTagged;
         }
@@ -682,11 +747,12 @@ where
     where
         V: ?Sized + ser::Serialize,
     {
-        self.serialize_str(key)?;
-        value.serialize(&mut **self)
+        self.serialize_struct_field(key, value)
     }
 
     fn end(self) -> Result<()> {
+        #[cfg(feature = "flatten_dunder")]
+        self.pop_plan()?;
         self.emit_mapping_end()
     }
 }
@@ -702,11 +768,12 @@ where
     where
         V: ?Sized + ser::Serialize,
     {
-        self.serialize_str(field)?;
-        v.serialize(&mut **self)
+        self.serialize_struct_field(field, v)
     }
 
     fn end(self) -> Result<()> {
+        #[cfg(feature = "flatten_dunder")]
+        self.pop_plan()?;
         self.emit_mapping_end()
     }
 }
@@ -715,19 +782,40 @@ where
 ///
 /// Serialization can fail if `T`'s implementation of `Serialize` decides to
 /// return an error.
+///
+/// # Dunder fields
+///
+/// With the `flatten_dunder` feature, dunder-named struct fields are written
+/// as entries of the enclosing mapping, as [`to_value`](crate::to_value) does.
+/// To find keys that repeat, every value's `Serialize` impl runs once more
+/// before it is written (twice for structs with dunder fields) against a
+/// serializer that records only its shape and keys. Impls must therefore make
+/// the same calls every time. A struct whose impl makes different calls
+/// (another name or length, and, where keys repeat, other keys or another
+/// number of entries) fails with an error. An impl that can only run once,
+/// such as one that takes an iterator out of a `RefCell`, writes nothing the
+/// second time; [`AsValue`](crate::AsValue) only re-runs structs and enum
+/// variants and does not have this limitation.
+///
+/// The last value of a repeated key wins, as in `to_value`, but it is written
+/// at its last position. Only repeats produced by dunder fields are resolved,
+/// and only string keys count as repeated; an error in an overwritten value is
+/// not reported. Repeats in the top-level value are only resolved through this
+/// function and [`to_string`], not when serializing into a [`Serializer`]
+/// directly.
 pub fn to_writer<W, T>(writer: W, value: &T) -> Result<()>
 where
     W: io::Write,
     T: ?Sized + ser::Serialize,
 {
     let mut serializer = Serializer::new(writer);
-    value.serialize(&mut serializer)
+    serializer.serialize_child(value)
 }
 
 /// Serialize the given data structure as a String of YAML.
 ///
 /// Serialization can fail if `T`'s implementation of `Serialize` decides to
-/// return an error.
+/// return an error. Dunder fields are handled as described for [`to_writer`].
 pub fn to_string<T>(value: &T) -> Result<String>
 where
     T: ?Sized + ser::Serialize,
