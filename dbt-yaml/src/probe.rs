@@ -14,9 +14,13 @@
 //! such structs can be started with their real length.
 //!
 //! This relies on `Serialize` impls making the same calls every time they
-//! run. Writers check a struct's name and length, and for a struct with a
-//! plan every key and the entry count, against what the probe saw; a
+//! run. The writer checks a struct's name and length, and for a struct with
+//! a plan every key and the entry count, against what the probe saw; a
 //! mismatch fails with [`NONDETERMINISTIC`] rather than writing wrong output.
+//!
+//! Probing runs `Serialize` impls that also set the span side channel the
+//! Value serializer reads (see [`crate::spanned`]), so it must not run while
+//! a `Value` is being built.
 
 use crate::error::Error;
 use crate::value::tagged::{self, MaybeTag};
@@ -95,18 +99,13 @@ pub(crate) enum Shape {
 /// Which entries of one struct are overwritten by a later entry.
 #[derive(Clone)]
 pub(crate) struct Plan {
-    /// Name and length of the struct, checked by the YAML serializer.
-    #[cfg_attr(not(feature = "flatten_dunder"), allow(dead_code))]
-    name: &'static str,
-    #[cfg_attr(not(feature = "flatten_dunder"), allow(dead_code))]
-    len: usize,
     /// Every entry's key, flattened entries inlined, in order.
     keys: Vec<Key>,
     skip: Vec<bool>,
 }
 
 impl Plan {
-    fn new(name: &'static str, len: usize, keys: Vec<Key>) -> Option<Self> {
+    fn new(keys: Vec<Key>) -> Option<Self> {
         let mut last = HashMap::with_capacity(keys.len());
         for (i, key) in keys.iter().enumerate() {
             if let Some(key) = key.as_str() {
@@ -118,18 +117,7 @@ impl Plan {
             .enumerate()
             .map(|(i, key)| key.as_str().is_some_and(|key| last[key] != i))
             .collect();
-        skip.contains(&true).then_some(Plan {
-            name,
-            len,
-            keys,
-            skip,
-        })
-    }
-
-    /// Whether this plan was probed from a struct with this name and length.
-    #[cfg(feature = "flatten_dunder")]
-    pub(crate) fn matches(&self, name: &str, len: usize) -> bool {
-        self.name == name && self.len == len
+        skip.contains(&true).then_some(Plan { keys, skip })
     }
 
     /// Whether the entry at `index` is overwritten by a later one, or `None`
@@ -165,10 +153,13 @@ pub(crate) fn analyze<V>(value: &V, extra: Option<&'static str>) -> Analysis
 where
     V: ?Sized + Serialize,
 {
-    // The first pass allocates nothing and only looks for dunder fields. A
-    // struct without one cannot collide: serde rejects duplicate field names.
+    // Without an extra entry, the first pass allocates nothing and only looks
+    // for dunder fields: a struct without one cannot collide, since serde
+    // rejects duplicate field names. With one, the keys are needed whatever
+    // that pass would find, so the first pass collects them.
     let mut probed = Probed {
         top_map: extra.is_some(),
+        collect: extra.is_some(),
         ..Probed::default()
     };
     if value.serialize(Probe::top(&mut probed)).is_err() {
@@ -187,34 +178,25 @@ where
         len: None,
         plan: None,
     };
-    let (name, len) = match probed.shape {
-        Shape::Struct { name, len } => (name, len),
-        Shape::StructVariant { variant, len } => (variant, len),
-        Shape::Map if extra.is_some() => ("", 0),
+    match probed.shape {
+        Shape::Struct { .. } | Shape::StructVariant { .. } => {}
+        Shape::Map if extra.is_some() => {}
         _ => return analysis,
-    };
+    }
     if !probed.has_flatten && extra.is_none() {
         return analysis;
     }
-    probed.collect = true;
-    if value.serialize(Probe::top(&mut probed)).is_err() {
-        return analysis;
+    if !probed.collect {
+        probed.collect = true;
+        if value.serialize(Probe::top(&mut probed)).is_err() {
+            return analysis;
+        }
     }
     probed.keys.extend(extra.map(Key::Static));
     let entries = probed.keys.len();
-    analysis.plan = Plan::new(name, len, probed.keys);
+    analysis.plan = Plan::new(probed.keys);
     analysis.len = Some(entries - analysis.plan.as_ref().map_or(0, Plan::skipped));
     analysis
-}
-
-/// Probes `value` and returns a plan if it serializes as a struct whose
-/// flattened entries collide.
-#[cfg(feature = "flatten_dunder")]
-pub(crate) fn plan_for<V>(value: &V) -> Option<Plan>
-where
-    V: ?Sized + Serialize,
-{
-    analyze(value, None).plan
 }
 
 /// Whether `key`, as the first key of a single-entry map, makes the map a

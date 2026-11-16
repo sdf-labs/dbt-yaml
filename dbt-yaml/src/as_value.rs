@@ -34,15 +34,26 @@ const NOT_MAPPING: &str = "expected the flatten field to be a mapping";
 /// assert_eq!(streamed, via_value);
 /// ```
 ///
-/// When writing reaches a struct or an enum variant, its `Serialize` impl
-/// runs again, once or twice, against a serializer that records only its
-/// shape and, for structs with dunder fields, its keys; field values are
-/// not visited. That tells which entries to skip where dunder fields repeat
-/// a key, and how many entries the struct writes, so it is started with its
-/// exact length. Impls must therefore make the same calls every time. A
-/// struct or variant whose impl makes different calls (another name or
-/// length, other keys, or another number of entries) fails with an error
-/// rather than writing a wrong plan or length.
+/// With the `flatten_dunder` feature, when writing reaches a struct or a
+/// struct variant, its `Serialize` impl runs again, once or twice, against a
+/// serializer that records only its shape and, for structs with dunder
+/// fields, its keys; field values are not visited. That tells which entries
+/// to skip where dunder fields repeat a key, and how many entries the struct
+/// writes, so it is started with its exact length. Without the feature there
+/// are no dunder fields, so only a value given an entry by [`with_entry`] is
+/// probed. A tuple or struct variant's impl always runs twice, since its
+/// data is written by a second run.
+///
+/// Impls must therefore make the same calls every time. A probed struct or a
+/// variant whose impl makes different calls (another name or length, other
+/// keys, or another number of entries) fails with an error rather than
+/// writing a wrong plan or length.
+///
+/// `AsValue` is for writing a value out. To get a [`Value`](crate::Value),
+/// use [`to_value`](crate::to_value) directly, not `to_value(&AsValue(&x))`:
+/// `Spanned` and `Value` hand their source spans to the Value serializer
+/// through a side channel, and probing runs their `Serialize` impls too, so
+/// spans can end up on the wrong nodes.
 ///
 /// # Limitations
 ///
@@ -214,6 +225,21 @@ where
     S: Serializer,
     V: ?Sized + Serialize,
 {
+    /// Probes the value once writing has reached a struct or struct variant,
+    /// whose call is `reached`. Without `flatten_dunder` there are no dunder
+    /// fields to flatten or skip, so only an extra entry needs the probe;
+    /// otherwise `reached` is all a probe would tell.
+    fn analyze(&self, reached: Shape, extra: Option<&'static str>) -> Analysis {
+        if cfg!(feature = "flatten_dunder") || extra.is_some() {
+            probe::analyze(self.value, extra)
+        } else {
+            Analysis {
+                shape: reached,
+                ..Analysis::default()
+            }
+        }
+    }
+
     /// Writes a tuple or struct variant as the single-entry map `to_value`
     /// makes of it. The variant's data is the value of that entry, but serde
     /// hands it over field by field, so the entry's value runs the impl
@@ -472,7 +498,10 @@ where
         name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStruct, S::Error> {
-        let analysis = probe::analyze(self.value, self.extra.map(|extra| extra.key));
+        let analysis = self.analyze(
+            Shape::Struct { name, len },
+            self.extra.map(|extra| extra.key),
+        );
         if !matches!(analysis.shape, Shape::Struct { name: n, len: l } if (n, l) == (name, len)) {
             return Err(nondeterministic());
         }
@@ -505,7 +534,7 @@ where
                 Ok(Variant::Data(Map::new(map, plan, analysis.len, None)))
             }
             None => {
-                let analysis = probe::analyze(self.value, None);
+                let analysis = self.analyze(Shape::StructVariant { variant, len }, None);
                 if !matches!(analysis.shape, Shape::StructVariant { variant: v, len: l } if (v, l) == (variant, len))
                 {
                     return Err(nondeterministic());

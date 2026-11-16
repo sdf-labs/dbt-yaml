@@ -1,8 +1,12 @@
 use dbt_yaml::{AsValue, Value};
 use indoc::indoc;
-use serde::ser::{Impossible, SerializeStruct as _};
+use serde::ser::Impossible;
+#[cfg(feature = "flatten_dunder")]
+use serde::ser::SerializeStruct as _;
 use serde_derive::Serialize;
-use std::cell::{Cell, RefCell};
+#[cfg(feature = "flatten_dunder")]
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 // serde_json is a dev-dependency only for these tests: `AsValue` must behave
@@ -447,6 +451,50 @@ fn test_flatten_overwrite() {
 
 #[cfg(feature = "flatten_dunder")]
 #[test]
+fn test_flatten_overwrite_by_field() {
+    #[derive(Serialize)]
+    struct Outer {
+        __extra__: BTreeMap<&'static str, &'static str>,
+        color: &'static str,
+        inner: Inner,
+    }
+    #[derive(Serialize)]
+    struct Inner {
+        size: &'static str,
+        __extra__: BTreeMap<&'static str, &'static str>,
+    }
+    let thing = Outer {
+        __extra__: BTreeMap::from([("color", "red"), ("shape", "round")]),
+        color: "blue",
+        inner: Inner {
+            size: "small",
+            __extra__: BTreeMap::from([("size", "large")]),
+        },
+    };
+    // A later field overwrites a flattened entry, at every level.
+    let yaml = indoc! {"
+        shape: round
+        color: blue
+        inner:
+          size: large
+    "};
+    let expected = dbt_yaml::to_value(&thing).unwrap();
+    test_as_value_reordered(&AsValue(&thing), &expected, yaml);
+
+    // Each element of a sequence is probed on its own.
+    let things = vec![thing];
+    let yaml = indoc! {"
+        - shape: round
+          color: blue
+          inner:
+            size: large
+    "};
+    let expected = dbt_yaml::to_value(&things).unwrap();
+    test_as_value_reordered(&AsValue(&things), &expected, yaml);
+}
+
+#[cfg(feature = "flatten_dunder")]
+#[test]
 fn test_flatten_not_mapping() {
     #[derive(Serialize)]
     struct Outer {
@@ -699,6 +747,7 @@ fn test_flatten_map_len() {
     assert_eq!(expected, map_len(&AsValue(&thing)));
 }
 
+#[cfg(feature = "flatten_dunder")]
 #[test]
 fn test_nondeterministic() {
     // Names itself differently on every call after the first.
@@ -800,8 +849,10 @@ fn test_flatten_tagged_value() {
         name: "box",
         __extra__: dbt_yaml::from_str("!Tag v").unwrap(),
     };
-    let error = serde_json::to_string(&AsValue(&thing)).unwrap_err();
     let expected = dbt_yaml::to_value(&thing).unwrap_err();
+    let error = serde_json::to_string(&AsValue(&thing)).unwrap_err();
+    assert_eq!(expected.to_string(), error.to_string());
+    let error = dbt_yaml::to_string(&AsValue(&thing)).unwrap_err();
     assert_eq!(expected.to_string(), error.to_string());
 }
 
@@ -909,4 +960,41 @@ fn test_flatten_nondeterministic_count() {
         "Serialize impl made different calls when probed",
         error.to_string()
     );
+}
+
+#[test]
+fn test_probe_runs() {
+    // Counts how often its impl runs.
+    struct Counted {
+        calls: std::cell::Cell<u32>,
+    }
+
+    impl serde::Serialize for Counted {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeStruct as _;
+            self.calls.set(self.calls.get() + 1);
+            let mut state = serializer.serialize_struct("Counted", 1)?;
+            state.serialize_field("x", &1)?;
+            state.end()
+        }
+    }
+
+    // Only `flatten_dunder` needs the probe, to look for dunder fields.
+    let thing = Counted {
+        calls: std::cell::Cell::new(0),
+    };
+    serde_json::to_string(&AsValue(&thing)).unwrap();
+    let expected = if cfg!(feature = "flatten_dunder") {
+        2
+    } else {
+        1
+    };
+    assert_eq!(expected, thing.calls.get());
+
+    // An extra entry needs the keys either way, collected in one probe.
+    let thing = Counted {
+        calls: std::cell::Cell::new(0),
+    };
+    serde_json::to_string(&AsValue(&thing).with_entry("y", &2)).unwrap();
+    assert_eq!(2, thing.calls.get());
 }
